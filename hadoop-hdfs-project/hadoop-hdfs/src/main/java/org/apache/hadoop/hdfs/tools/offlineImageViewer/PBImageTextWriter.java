@@ -17,14 +17,17 @@
  */
 package org.apache.hadoop.hdfs.tools.offlineImageViewer;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.permission.PermissionStatus;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockStoragePolicySuite;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.SectionName;
@@ -804,5 +807,17 @@ abstract class PBImageTextWriter implements Closeable {
       LOG.debug("No snapshot name found for inode {}", inode);
     }
     return new IgnoreSnapshotException();
+  }
+
+  public int getStoragePolicy(
+      INodeSection.XAttrFeatureProto xattrFeatureProto) {
+    List<XAttr> xattrs =
+        FSImageFormatPBINode.Loader.loadXAttrs(xattrFeatureProto, stringTable);
+    for (XAttr xattr : xattrs) {
+      if (BlockStoragePolicySuite.isStoragePolicyXAttr(xattr)) {
+        return xattr.getValue()[0];
+      }
+    }
+    return HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED;
   }
 }

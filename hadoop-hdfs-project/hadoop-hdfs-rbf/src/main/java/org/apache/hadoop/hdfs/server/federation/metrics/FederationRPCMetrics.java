@@ -50,9 +50,9 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   @Metric("Number of operations the Router proxied to a Namenode")
   private MutableCounterLong proxyOp;
 
-  @Metric("Number of operations to fail to reach NN")
-  private MutableCounterLong proxyOpFailureStandby;
   @Metric("Number of operations to hit a standby NN")
+  private MutableCounterLong proxyOpFailureStandby;
+  @Metric("Number of operations to fail to reach NN")
   private MutableCounterLong proxyOpFailureCommunicate;
   @Metric("Number of operations to hit a client overloaded Router")
   private MutableCounterLong proxyOpFailureClientOverloaded;
@@ -60,6 +60,8 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   private MutableCounterLong proxyOpNotImplemented;
   @Metric("Number of operation retries")
   private MutableCounterLong proxyOpRetries;
+  @Metric("Number of operations to hit no namenodes available")
+  private MutableCounterLong proxyOpNoNamenodes;
 
   @Metric("Failed requests due to State Store unavailable")
   private MutableCounterLong routerFailureStateStore;
@@ -69,6 +71,9 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   private MutableCounterLong routerFailureLocked;
   @Metric("Failed requests due to safe mode")
   private MutableCounterLong routerFailureSafemode;
+
+  @Metric("Number of operations to hit permit limits")
+  private MutableCounterLong proxyOpPermitRejected;
 
   public FederationRPCMetrics(Configuration conf, RouterRpcServer rpcServer) {
     this.rpcServer = rpcServer;
@@ -136,6 +141,15 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   @Override
   public long getProxyOpRetries() {
     return proxyOpRetries.value();
+  }
+
+  public void incrProxyOpNoNamenodes() {
+    proxyOpNoNamenodes.incr();
+  }
+
+  @Override
+  public long getProxyOpNoNamenodes() {
+    return proxyOpNoNamenodes.value();
   }
 
   public void incrRouterFailureStateStore() {
@@ -209,6 +223,11 @@ public class FederationRPCMetrics implements FederationRPCMBean {
     return rpcServer.getRPCClient().getJSON();
   }
 
+  @Override
+  public String getAsyncCallerPool() {
+    return rpcServer.getRPCClient().getAsyncCallerPoolJson();
+  }
+
   /**
    * Add the time to proxy an operation from the moment the Router sends it to
    * the Namenode until it replied.
@@ -247,5 +266,14 @@ public class FederationRPCMetrics implements FederationRPCMBean {
   @Override
   public long getProcessingOps() {
     return processingOp.value();
+  }
+
+  public void incrProxyOpPermitRejected() {
+    proxyOpPermitRejected.incr();
+  }
+
+  @Override
+  public long getProxyOpPermitRejected() {
+    return proxyOpPermitRejected.value();
   }
 }

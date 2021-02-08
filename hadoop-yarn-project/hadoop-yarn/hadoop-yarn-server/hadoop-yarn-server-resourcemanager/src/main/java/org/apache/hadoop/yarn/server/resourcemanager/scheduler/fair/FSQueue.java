@@ -46,7 +46,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 @Private
 @Unstable
@@ -184,6 +184,10 @@ public abstract class FSQueue implements Queue, Schedulable {
     return result;
   }
 
+  public ConfigurableResource getRawMaxShare() {
+    return maxShare;
+  }
+
   public Resource getReservedResource() {
     reservedResource.setMemorySize(metrics.getReservedMB());
     reservedResource.setVirtualCores(metrics.getReservedVirtualCores());
@@ -207,7 +211,7 @@ public abstract class FSQueue implements Queue, Schedulable {
   }
 
   @VisibleForTesting
-  protected float getMaxAMShare() {
+  public float getMaxAMShare() {
     return maxAMShare;
   }
 
@@ -297,9 +301,7 @@ public abstract class FSQueue implements Queue, Schedulable {
   public void setFairShare(Resource fairShare) {
     this.fairShare = fairShare;
     metrics.setFairShare(fairShare);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("The updated fairShare for " + getName() + " is " + fairShare);
-    }
+    LOG.debug("The updated fairShare for {} is {}", getName(), fairShare);
   }
 
   /** Get the steady fair share assigned to this Schedulable. */
@@ -428,10 +430,8 @@ public abstract class FSQueue implements Queue, Schedulable {
    */
   boolean assignContainerPreCheck(FSSchedulerNode node) {
     if (node.getReservedContainer() != null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Assigning container failed on node '" + node.getNodeName()
-            + " because it has reserved containers.");
-      }
+      LOG.debug("Assigning container failed on node '{}' because it has"
+          + " reserved containers.", node.getNodeName());
       return false;
     } else if (!Resources.fitsIn(getResourceUsage(), getMaxShare())) {
       if (LOG.isDebugEnabled()) {

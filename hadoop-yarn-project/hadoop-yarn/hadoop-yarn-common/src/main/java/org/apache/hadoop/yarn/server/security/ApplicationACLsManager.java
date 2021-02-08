@@ -35,7 +35,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.security.AdminACLsManager;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 @InterfaceAudience.Private
 public class ApplicationACLsManager {
@@ -98,11 +98,8 @@ public class ApplicationACLsManager {
       ApplicationAccessType applicationAccessType, String applicationOwner,
       ApplicationId applicationId) {
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Verifying access-type " + applicationAccessType + " for "
-          + callerUGI + " on application " + applicationId + " owned by "
-          + applicationOwner);
-    }
+    LOG.debug("Verifying access-type {} for {} on application {} owned by {}",
+            applicationAccessType, callerUGI, applicationId, applicationOwner);
 
     String user = callerUGI.getShortUserName();
     if (!areACLsEnabled()) {
@@ -112,21 +109,18 @@ public class ApplicationACLsManager {
     Map<ApplicationAccessType, AccessControlList> acls = this.applicationACLS
         .get(applicationId);
     if (acls == null) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("ACL not found for application "
-            + applicationId + " owned by "
-            + applicationOwner + ". Using default ["
-            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
-      }
+      LOG.debug("ACL not found for application {} owned by {}."
+          + " Using default [{}]", applicationId, applicationOwner,
+          YarnConfiguration.DEFAULT_YARN_APP_ACL);
     } else {
       AccessControlList applicationACLInMap = acls.get(applicationAccessType);
       if (applicationACLInMap != null) {
         applicationACL = applicationACLInMap;
-      } else if (LOG.isDebugEnabled()) {
-        LOG.debug("ACL not found for access-type " + applicationAccessType
-            + " for application " + applicationId + " owned by "
-            + applicationOwner + ". Using default ["
-            + YarnConfiguration.DEFAULT_YARN_APP_ACL + "]");
+      } else {
+        LOG.debug("ACL not found for access-type {} for application {}"
+            + " owned by {}. Using default [{}]", applicationAccessType,
+            applicationId, applicationOwner,
+            YarnConfiguration.DEFAULT_YARN_APP_ACL);
       }
     }
 

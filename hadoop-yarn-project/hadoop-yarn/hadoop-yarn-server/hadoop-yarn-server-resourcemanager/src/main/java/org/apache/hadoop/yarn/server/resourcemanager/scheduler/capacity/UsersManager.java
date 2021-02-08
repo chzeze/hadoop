@@ -24,7 +24,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
@@ -41,7 +40,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceUsage;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * {@link UsersManager} tracks users in the system and its respective data
@@ -72,7 +71,7 @@ public class UsersManager implements AbstractUsersManager {
 
   // To detect whether there is a change in user count for every user-limit
   // calculation.
-  private AtomicLong latestVersionOfUsersState = new AtomicLong(0);
+  private long latestVersionOfUsersState = 0;
   private Map<String, Map<SchedulingMode, Long>> localVersionOfActiveUsersState =
       new HashMap<String, Map<SchedulingMode, Long>>();
   private Map<String, Map<SchedulingMode, Long>> localVersionOfAllUsersState =
@@ -91,8 +90,12 @@ public class UsersManager implements AbstractUsersManager {
       new HashMap<String, Set<ApplicationId>>();
 
   // Pre-computed list of user-limits.
-  Map<String, Map<SchedulingMode, Resource>> preComputedActiveUserLimit = new ConcurrentHashMap<>();
-  Map<String, Map<SchedulingMode, Resource>> preComputedAllUserLimit = new ConcurrentHashMap<>();
+  @VisibleForTesting
+  Map<String, Map<SchedulingMode, Resource>> preComputedActiveUserLimit =
+      new HashMap<>();
+  @VisibleForTesting
+  Map<String, Map<SchedulingMode, Resource>> preComputedAllUserLimit =
+      new HashMap<>();
 
   private float activeUsersTimesWeights = 0.0f;
   private float allUsersTimesWeights = 0.0f;
@@ -361,9 +364,9 @@ public class UsersManager implements AbstractUsersManager {
     writeLock.lock();
     try {
 
-      long value = latestVersionOfUsersState.incrementAndGet();
+      long value = ++latestVersionOfUsersState;
       if (value < 0) {
-        latestVersionOfUsersState.set(0);
+        latestVersionOfUsersState = 0;
       }
     } finally {
       writeLock.unlock();
@@ -522,12 +525,10 @@ public class UsersManager implements AbstractUsersManager {
       user.setUserResourceLimit(userSpecificUserLimit);
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("userLimit is fetched. userLimit=" + userLimitResource
-          + ", userSpecificUserLimit=" + userSpecificUserLimit
-          + ", schedulingMode=" + schedulingMode
-          + ", partition=" + nodePartition);
-    }
+    LOG.debug("userLimit is fetched. userLimit={}, userSpecificUserLimit={},"
+        + " schedulingMode={}, partition={}", userLimitResource,
+        userSpecificUserLimit, schedulingMode, nodePartition);
+
     return userSpecificUserLimit;
   }
 
@@ -576,14 +577,20 @@ public class UsersManager implements AbstractUsersManager {
         Resources.multiplyAndNormalizeDown(resourceCalculator,
             userLimitResource, weight, lQueue.getMinimumAllocation());
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("userLimit is fetched. userLimit=" + userLimitResource
-          + ", userSpecificUserLimit=" + userSpecificUserLimit
-          + ", schedulingMode=" + schedulingMode
-          + ", partition=" + nodePartition);
-    }
+    LOG.debug("userLimit is fetched. userLimit={}, userSpecificUserLimit={},"
+        + " schedulingMode={}, partition={}", userLimitResource,
+        userSpecificUserLimit, schedulingMode, nodePartition);
 
     return userSpecificUserLimit;
+  }
+
+  protected long getLatestVersionOfUsersState() {
+    readLock.lock();
+    try {
+      return latestVersionOfUsersState;
+    } finally {
+      readLock.unlock();
+    }
   }
 
   /*
@@ -593,8 +600,13 @@ public class UsersManager implements AbstractUsersManager {
    */
   private boolean isRecomputeNeeded(SchedulingMode schedulingMode,
       String nodePartition, boolean isActive) {
-    return (getLocalVersionOfUsersState(nodePartition, schedulingMode,
-        isActive) != latestVersionOfUsersState.get());
+    readLock.lock();
+    try {
+      return (getLocalVersionOfUsersState(nodePartition, schedulingMode,
+          isActive) != latestVersionOfUsersState);
+    } finally {
+      readLock.unlock();
+    }
   }
 
   /*
@@ -615,7 +627,7 @@ public class UsersManager implements AbstractUsersManager {
         localVersionOfUsersState.put(nodePartition, localVersion);
       }
 
-      localVersion.put(schedulingMode, latestVersionOfUsersState.get());
+      localVersion.put(schedulingMode, latestVersionOfUsersState);
     } finally {
       writeLock.unlock();
     }
@@ -779,8 +791,16 @@ public class UsersManager implements AbstractUsersManager {
     // IGNORE_PARTITION_EXCLUSIVITY allocation.
     Resource maxUserLimit = Resources.none();
     if (schedulingMode == SchedulingMode.RESPECT_PARTITION_EXCLUSIVITY) {
-      maxUserLimit = Resources.multiplyAndRoundDown(queueCapacity,
-          getUserLimitFactor());
+      // If user-limit-factor set to -1, we should disabled user limit.
+      if (getUserLimitFactor() != -1) {
+        maxUserLimit = Resources.multiplyAndRoundDown(queueCapacity,
+            getUserLimitFactor());
+      } else {
+        maxUserLimit = lQueue.
+            getEffectiveMaxCapacityDown(
+                nodePartition, lQueue.getMinimumAllocation());
+      }
+
     } else if (schedulingMode == SchedulingMode.IGNORE_PARTITION_EXCLUSIVITY) {
       maxUserLimit = partitionResource;
     }
@@ -794,7 +814,7 @@ public class UsersManager implements AbstractUsersManager {
 
     if (LOG.isDebugEnabled()) {
       LOG.debug("User limit computation for " + userName
-          + ",  in queue: " + lQueue.getQueueName()
+          + ",  in queue: " + lQueue.getQueuePath()
           + ",  userLimitPercent=" + lQueue.getUserLimit()
           + ",  userLimitFactor=" + lQueue.getUserLimitFactor()
           + ",  required=" + required
@@ -870,10 +890,8 @@ public class UsersManager implements AbstractUsersManager {
         // A user is added to active list. Invalidate user-limit cache.
         userLimitNeedsRecompute();
         updateActiveUsersResourceUsage(user);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("User " + user + " added to activeUsers, currently: "
-              + activeUsers);
-        }
+        LOG.debug("User {} added to activeUsers, currently: {}",
+            user, activeUsers);
       }
       if (userApps.add(applicationId)) {
         metrics.activateApp(user);
@@ -901,10 +919,8 @@ public class UsersManager implements AbstractUsersManager {
           // A user is removed from active list. Invalidate user-limit cache.
           userLimitNeedsRecompute();
           updateNonActiveUsersResourceUsage(user);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("User " + user + " removed from activeUsers, currently: "
-                + activeUsers);
-          }
+          LOG.debug("User {} removed from activeUsers, currently: {}",
+              user, activeUsers);
         }
       }
     } finally {

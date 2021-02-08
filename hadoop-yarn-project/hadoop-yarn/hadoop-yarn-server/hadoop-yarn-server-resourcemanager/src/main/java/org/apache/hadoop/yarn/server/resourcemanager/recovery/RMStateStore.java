@@ -39,8 +39,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
 import javax.crypto.SecretKey;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.SettableFuture;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.SettableFuture;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -377,9 +377,7 @@ public abstract class RMStateStore extends AbstractService {
       ApplicationAttemptStateData attemptState =
           ((RMStateStoreAppAttemptEvent) event).getAppAttemptState();
       try {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Storing info for attempt: " + attemptState.getAttemptId());
-        }
+        LOG.debug("Storing info for attempt: {}", attemptState.getAttemptId());
         store.storeApplicationAttemptStateInternal(attemptState.getAttemptId(),
             attemptState);
         store.notifyApplicationAttempt(new RMAppAttemptEvent
@@ -408,9 +406,8 @@ public abstract class RMStateStore extends AbstractService {
       ApplicationAttemptStateData attemptState =
           ((RMStateUpdateAppAttemptEvent) event).getAppAttemptState();
       try {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Updating info for attempt: " + attemptState.getAttemptId());
-        }
+        LOG.debug("Updating info for attempt: {}",
+            attemptState.getAttemptId());
         store.updateApplicationAttemptStateInternal(attemptState.getAttemptId(),
             attemptState);
         store.notifyApplicationAttempt(new RMAppAttemptEvent
@@ -950,6 +947,13 @@ public abstract class RMStateStore extends AbstractService {
     getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState));
   }
 
+  @SuppressWarnings("unchecked")
+  public void updateApplicationState(ApplicationStateData appState,
+      boolean notifyApp) {
+    getRMStateStoreEventHandler().handle(new RMStateUpdateAppEvent(appState,
+        notifyApp));
+  }
+
   public void updateApplicationStateSynchronously(ApplicationStateData appState,
       boolean notifyApp, SettableFuture<Object> resultFuture) {
     handleStoreEvent(
@@ -989,7 +993,8 @@ public abstract class RMStateStore extends AbstractService {
             appAttempt.getMasterContainer(),
             credentials, appAttempt.getStartTime(),
             resUsage.getResourceUsageSecondsMap(),
-            attempMetrics.getPreemptedResourceSecondsMap());
+            attempMetrics.getPreemptedResourceSecondsMap(),
+            attempMetrics.getTotalAllocatedContainers());
 
     getRMStateStoreEventHandler().handle(
       new RMStateStoreAppAttemptEvent(attemptState));
@@ -1235,9 +1240,7 @@ public abstract class RMStateStore extends AbstractService {
     this.writeLock.lock();
     try {
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Processing event of type " + event.getType());
-      }
+      LOG.debug("Processing event of type {}", event.getType());
 
       final RMStateStoreState oldState = getRMStateStoreState();
 

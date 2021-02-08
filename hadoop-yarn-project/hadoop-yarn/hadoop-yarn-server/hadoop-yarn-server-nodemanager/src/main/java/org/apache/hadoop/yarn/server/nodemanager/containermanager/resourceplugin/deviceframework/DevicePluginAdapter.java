@@ -18,9 +18,9 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.deviceframework;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.nodemanager.Context;
@@ -47,7 +47,8 @@ import java.util.Map;
  *
  * */
 public class DevicePluginAdapter implements ResourcePlugin {
-  private final static Log LOG = LogFactory.getLog(DevicePluginAdapter.class);
+  private final static Logger LOG = LoggerFactory.
+      getLogger(DevicePluginAdapter.class);
 
   private final String resourceName;
 

@@ -28,7 +28,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -240,10 +240,10 @@ public class TestDiskError {
   @Test
   public void testDataTransferWhenBytesPerChecksumIsZero() throws IOException {
     DataNode dn0 = cluster.getDataNodes().get(0);
-    // Make a mock blockScanner class and return false whenever isEnabled is
+    // Make a mock blockScanner class and return true whenever isEnabled is
     // called on blockScanner
     BlockScanner mockScanner = Mockito.mock(BlockScanner.class);
-    Mockito.when(mockScanner.isEnabled()).thenReturn(false);
+    Mockito.when(mockScanner.isEnabled()).thenReturn(true);
     dn0.setBlockScanner(mockScanner);
     Path filePath = new Path("test.dat");
     FSDataOutputStream out = fs.create(filePath, (short) 1);

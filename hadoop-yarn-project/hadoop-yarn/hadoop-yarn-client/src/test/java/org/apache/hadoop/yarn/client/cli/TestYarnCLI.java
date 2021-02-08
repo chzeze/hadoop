@@ -19,6 +19,7 @@ package org.apache.hadoop.yarn.client.cli;
 
 import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.api.records.NodeAttributeType;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -99,8 +100,8 @@ import org.eclipse.jetty.util.log.Log;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 public class TestYarnCLI {
   private static final Logger LOG = LoggerFactory.getLogger(TestYarnCLI.class);
@@ -146,6 +147,7 @@ public class TestYarnCLI {
           null, null, false, Priority.newInstance(0), "high-mem", "high-mem");
       newApplicationReport.setLogAggregationStatus(LogAggregationStatus.SUCCEEDED);
       newApplicationReport.setPriority(Priority.newInstance(0));
+      newApplicationReport.setRMClusterId("Cluster1");
       ApplicationTimeout timeout = ApplicationTimeout
           .newInstance(ApplicationTimeoutType.LIFETIME, "UNLIMITED", -1);
       newApplicationReport.setApplicationTimeouts(
@@ -185,6 +187,7 @@ public class TestYarnCLI {
       pw.print("\tTimeoutType : LIFETIME");
       pw.print("\tExpiryTime : UNLIMITED");
       pw.println("\tRemainingTime : -1seconds");
+      pw.println("\tRMClusterId : Cluster1");
       pw.println();
       pw.close();
       String appReportStr = baos.toString("UTF-8");
@@ -1685,26 +1688,26 @@ public class TestYarnCLI {
   public void testMissingArguments() throws Exception {
     ApplicationCLI cli = createAndGetAppCLI();
     int result = cli.run(new String[] { "application", "-status" });
-    Assert.assertEquals(result, -1);
+    assertThat(result).isEqualTo(-1);
     Assert.assertEquals(String.format("Missing argument for options%n%1s",
         createApplicationCLIHelpMessage()), sysOutStream.toString());
 
     sysOutStream.reset();
     result = cli.run(new String[] { "applicationattempt", "-status" });
-    Assert.assertEquals(result, -1);
+    assertThat(result).isEqualTo(-1);
     Assert.assertEquals(String.format("Missing argument for options%n%1s",
         createApplicationAttemptCLIHelpMessage()), sysOutStream.toString());
 
     sysOutStream.reset();
     result = cli.run(new String[] { "container", "-status" });
-    Assert.assertEquals(result, -1);
+    assertThat(result).isEqualTo(-1);
     Assert.assertEquals(String.format("Missing argument for options %1s",
         createContainerCLIHelpMessage()), normalize(sysOutStream.toString()));
 
     sysOutStream.reset();
     NodeCLI nodeCLI = createAndGetNodeCLI();
     result = nodeCLI.run(new String[] { "-status" });
-    Assert.assertEquals(result, -1);
+    assertThat(result).isEqualTo(-1);
     Assert.assertEquals(String.format("Missing argument for options%n%1s",
         createNodeCLIHelpMessage()), sysOutStream.toString());
   }
@@ -1727,9 +1730,9 @@ public class TestYarnCLI {
     pw.println("Queue Information : ");
     pw.println("Queue Name : " + "queueA");
     pw.println("\tState : " + "RUNNING");
-    pw.println("\tCapacity : " + "40.0%");
-    pw.println("\tCurrent Capacity : " + "50.0%");
-    pw.println("\tMaximum Capacity : " + "80.0%");
+    pw.println("\tCapacity : " + "40.00%");
+    pw.println("\tCurrent Capacity : " + "50.00%");
+    pw.println("\tMaximum Capacity : " + "80.00%");
     pw.println("\tDefault Node Label expression : " + "GPU");
     pw.println("\tAccessible Node Labels : " + "JDK_7,GPU");
     pw.println("\tPreemption : " + "enabled");
@@ -1894,9 +1897,9 @@ public class TestYarnCLI {
     pw.println("Queue Information : ");
     pw.println("Queue Name : " + "queueA");
     pw.println("\tState : " + "RUNNING");
-    pw.println("\tCapacity : " + "40.0%");
-    pw.println("\tCurrent Capacity : " + "50.0%");
-    pw.println("\tMaximum Capacity : " + "80.0%");
+    pw.println("\tCapacity : " + "40.00%");
+    pw.println("\tCurrent Capacity : " + "50.00%");
+    pw.println("\tMaximum Capacity : " + "80.00%");
     pw.println("\tDefault Node Label expression : "
         + NodeLabel.DEFAULT_NODE_LABEL_PARTITION);
     pw.println("\tAccessible Node Labels : ");
@@ -2017,7 +2020,7 @@ public class TestYarnCLI {
         cli.run(new String[] { "application", "-appId",
             applicationId.toString(),
         "-updatePriority", "1" });
-    Assert.assertEquals(result, 0);
+    assertThat(result).isEqualTo(0);
     verify(client).updateApplicationPriority(any(ApplicationId.class),
         any(Priority.class));
 
@@ -2026,9 +2029,8 @@ public class TestYarnCLI {
   @Test
   public void testFailApplicationAttempt() throws Exception {
     ApplicationCLI cli = createAndGetAppCLI();
-    int exitCode =
-        cli.run(new String[] { "applicationattempt", "-fail",
-            "appattempt_1444199730803_0003_000001" });
+    int exitCode = cli.run(new String[] {"applicationattempt", "-fail",
+        "appattempt_1444199730803_0003_000001"});
     Assert.assertEquals(0, exitCode);
 
     verify(client).failApplicationAttempt(any(ApplicationAttemptId.class));
@@ -2413,7 +2415,7 @@ public class TestYarnCLI {
 
     int result = cli.run(new String[] { "application", "-appId",
         applicationId.toString(), "-updateLifetime", "10" });
-    Assert.assertEquals(result, 0);
+    assertThat(result).isEqualTo(0);
     verify(client)
         .updateApplicationTimeouts(any(UpdateApplicationTimeoutsRequest.class));
   }

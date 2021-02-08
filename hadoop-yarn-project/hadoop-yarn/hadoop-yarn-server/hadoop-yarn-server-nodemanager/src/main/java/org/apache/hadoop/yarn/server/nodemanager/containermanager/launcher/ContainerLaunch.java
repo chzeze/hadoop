@@ -96,7 +96,7 @@ import org.apache.hadoop.yarn.server.security.AMSecretKeys;
 import org.apache.hadoop.yarn.util.Apps;
 import org.apache.hadoop.yarn.util.AuxiliaryServiceHelper;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -647,11 +647,8 @@ public class ContainerLaunch implements Callable<Integer> {
 
   protected void handleContainerExitCode(int exitCode, Path containerLogDir) {
     ContainerId containerId = container.getContainerId();
-
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Container " + containerId + " completed with exit code "
-          + exitCode);
-    }
+    LOG.debug("Container {} completed with exit code {}", containerId,
+        exitCode);
 
     StringBuilder diagnosticInfo =
         new StringBuilder("Container exited with a non-zero exit code ");
@@ -788,7 +785,8 @@ public class ContainerLaunch implements Callable<Integer> {
     StringBuilder analysis = new StringBuilder();
     if (errorMsg.indexOf("Error: Could not find or load main class"
         + " org.apache.hadoop.mapreduce") != -1) {
-      analysis.append("Please check whether your etc/hadoop/mapred-site.xml "
+      analysis.append(
+          "Please check whether your <HADOOP_HOME>/etc/hadoop/mapred-site.xml "
           + "contains the below configuration:\n");
       analysis.append("<property>\n")
           .append("  <name>yarn.app.mapreduce.am.env</name>\n")
@@ -840,22 +838,17 @@ public class ContainerLaunch implements Callable<Integer> {
       return;
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Getting pid for container " + containerIdStr
-          + " to send signal to from pid file "
-          + (pidFilePath != null ? pidFilePath.toString() : "null"));
-    }
+    LOG.debug("Getting pid for container {} to send signal to from pid"
+        + " file {}", containerIdStr,
+        (pidFilePath != null ? pidFilePath.toString() : "null"));
 
     try {
       // get process id from pid file if available
       // else if shell is still active, get it from the shell
       String processId = getContainerPid();
       if (processId != null) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Sending signal to pid " + processId
-              + " as user " + user
-              + " for container " + containerIdStr);
-        }
+        LOG.debug("Sending signal to pid {} as user {} for container {}",
+            processId, user, containerIdStr);
 
         boolean result = exec.signalContainer(
             new ContainerSignalContext.Builder()
@@ -1013,10 +1006,8 @@ public class ContainerLaunch implements Callable<Integer> {
     String containerIdStr = 
         container.getContainerId().toString();
     String processId;
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Accessing pid for container " + containerIdStr
-          + " from pid file " + pidFilePath);
-    }
+    LOG.debug("Accessing pid for container {} from pid file {}",
+        containerIdStr, pidFilePath);
     int sleepCounter = 0;
     final int sleepInterval = 100;
 
@@ -1025,10 +1016,7 @@ public class ContainerLaunch implements Callable<Integer> {
     while (true) {
       processId = ProcessIdFileReader.getProcessId(pidFilePath);
       if (processId != null) {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug(
-              "Got pid " + processId + " for container " + containerIdStr);
-        }
+        LOG.debug("Got pid {} for container {}", processId, containerIdStr);
         break;
       }
       else if ((sleepCounter*sleepInterval) > maxKillWaitTime) {
@@ -1632,6 +1620,9 @@ public class ContainerLaunch implements Callable<Integer> {
 
     addToEnvMap(environment, nmVars, Environment.PWD.name(), pwd.toString());
 
+    addToEnvMap(environment, nmVars, Environment.LOCALIZATION_COUNTERS.name(),
+        container.localizationCountersAsString());
+
     if (!Shell.WINDOWS) {
       addToEnvMap(environment, nmVars, "JVM_PID", "$$");
     }
@@ -1644,6 +1635,27 @@ public class ContainerLaunch implements Callable<Integer> {
         File.pathSeparator);
     nmVars.addAll(Apps.getEnvVarsFromInputProperty(
         YarnConfiguration.NM_ADMIN_USER_ENV, defEnvStr, conf));
+
+    if (!Shell.WINDOWS) {
+      // maybe force path components
+      String forcePath = conf.get(YarnConfiguration.NM_ADMIN_FORCE_PATH,
+          YarnConfiguration.DEFAULT_NM_ADMIN_FORCE_PATH);
+      if (!forcePath.isEmpty()) {
+        String userPath = environment.get(Environment.PATH.name());
+        environment.remove(Environment.PATH.name());
+        if (userPath == null || userPath.isEmpty()) {
+          Apps.addToEnvironment(environment, Environment.PATH.name(),
+              forcePath, File.pathSeparator);
+          Apps.addToEnvironment(environment, Environment.PATH.name(),
+              "$PATH", File.pathSeparator);
+        } else {
+          Apps.addToEnvironment(environment, Environment.PATH.name(),
+              forcePath, File.pathSeparator);
+          Apps.addToEnvironment(environment, Environment.PATH.name(),
+              userPath, File.pathSeparator);
+        }
+      }
+    }
 
     // TODO: Remove Windows check and use this approach on all platforms after
     // additional testing.  See YARN-358.

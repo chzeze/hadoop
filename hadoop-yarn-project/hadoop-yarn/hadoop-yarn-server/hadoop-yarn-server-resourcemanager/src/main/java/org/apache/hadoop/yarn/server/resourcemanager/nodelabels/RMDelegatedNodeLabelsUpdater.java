@@ -36,7 +36,7 @@ import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Update nodes labels map for ResourceManager periodically. It collects
@@ -191,9 +191,9 @@ public class RMDelegatedNodeLabelsUpdater extends CompositeService {
           + "delegated-centralized node label configuration is enabled";
       LOG.error(msg);
       throw new IOException(msg);
-    } else if (LOG.isDebugEnabled()) {
-      LOG.debug("RM Node labels mapping provider class is : "
-          + nodeLabelsMappingProvider.getClass().toString());
+    } else {
+      LOG.debug("RM Node labels mapping provider class is : {}",
+          nodeLabelsMappingProvider.getClass());
     }
 
     return nodeLabelsMappingProvider;

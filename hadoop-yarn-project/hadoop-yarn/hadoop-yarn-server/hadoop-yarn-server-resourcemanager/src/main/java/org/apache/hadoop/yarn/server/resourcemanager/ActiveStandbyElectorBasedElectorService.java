@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -213,10 +213,8 @@ public class ActiveStandbyElectorBasedElectorService extends AbstractService
 
   @Override
   public void fenceOldActive(byte[] oldActiveData) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Request to fence old active being ignored, " +
-          "as embedded leader election doesn't support fencing");
-    }
+    LOG.debug("Request to fence old active being ignored, " +
+        "as embedded leader election doesn't support fencing");
   }
 
   private static byte[] createActiveNodeInfo(String clusterId, String rmId)

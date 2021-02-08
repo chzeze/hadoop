@@ -108,10 +108,8 @@ public class FifoIntraQueuePreemptionPlugin
       Resources.addTo(actualPreemptNeeded, a1.getActuallyToBePreempted());
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Selected to preempt " + actualPreemptNeeded
-          + " resource from partition:" + partition);
-    }
+    LOG.debug("Selected to preempt {} resource from partition:{}",
+        actualPreemptNeeded, partition);
     return resToObtainByPartition;
   }
 
@@ -445,9 +443,7 @@ public class FifoIntraQueuePreemptionPlugin
             tmpUser.amUsed);
         tmpUser.setUserLimit(userLimitResource);
 
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("TempUser:" + tmpUser);
-        }
+        LOG.debug("TempUser:{}", tmpUser);
 
         tmpUser.idealAssigned = Resources.createResource(0, 0);
         tq.addUserPerPartition(userName, tmpUser);
@@ -611,8 +607,10 @@ public class FifoIntraQueuePreemptionPlugin
     // might be due to high priority apps running in same user.
     String partition = context.getScheduler()
         .getSchedulerNode(c.getAllocatedNode()).getPartition();
-    TempQueuePerPartition tq = context.getQueueByPartition(app.getQueueName(),
-        partition);
+    String queuePath =
+        context.getScheduler().getQueue(app.getQueueName()).getQueuePath();
+    TempQueuePerPartition tq =
+        context.getQueueByPartition(queuePath, partition);
     TempUserPerPartition tmpUser = tq.getUsersPerPartition().get(app.getUser());
 
     // Given user is not present, skip the check.

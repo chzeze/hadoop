@@ -18,10 +18,11 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -141,7 +142,7 @@ public class TestRMHA {
     try {
       rm.getNewAppId();
       nm = rm.registerNode("127.0.0.1:1", 2048);
-      app = rm.submitApp(1024);
+      app = MockRMAppSubmitter.submitWithMemory(1024, rm);
       attempt = app.getCurrentAppAttempt();
       rm.waitForState(attempt.getAppAttemptId(), RMAppAttemptState.SCHEDULED);
     } catch (Exception e) {
@@ -381,14 +382,14 @@ public class TestRMHA {
     rm = new MockRM(conf);
     rm.init(conf);
 
-    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM2_NODE_ID);
+    assertThat(conf.get(YarnConfiguration.RM_HA_ID)).isEqualTo(RM2_NODE_ID);
 
     //test explicitly lookup HA-ID
     configuration.set(YarnConfiguration.RM_HA_ID, RM1_NODE_ID);
     conf = new YarnConfiguration(configuration);
     rm = new MockRM(conf);
     rm.init(conf);
-    assertEquals(conf.get(YarnConfiguration.RM_HA_ID), RM1_NODE_ID);
+    assertThat(conf.get(YarnConfiguration.RM_HA_ID)).isEqualTo(RM1_NODE_ID);
 
     //test if RM_HA_ID can not be found
     configuration

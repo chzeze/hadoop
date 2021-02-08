@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.service.client;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
@@ -57,6 +57,7 @@ import org.apache.hadoop.yarn.client.api.YarnClientApplication;
 import org.apache.hadoop.yarn.client.cli.ApplicationCLI;
 import org.apache.hadoop.yarn.client.util.YarnClientUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 import org.apache.hadoop.yarn.proto.ClientAMProtocol.CancelUpgradeRequestProto;
@@ -816,6 +817,21 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
           + appDir);
       ret = EXIT_NOT_FOUND;
     }
+
+    // Delete Public Resource Dir
+    Path publicResourceDir = new Path(fs.getBasePath(), serviceName);
+    if (fileSystem.exists(publicResourceDir)) {
+      if (fileSystem.delete(publicResourceDir, true)) {
+        LOG.info("Successfully deleted public resource dir for "
+            + serviceName + ": " + publicResourceDir);
+      } else {
+        String message = "Failed to delete public resource dir for service "
+            + serviceName + " at:  " + publicResourceDir;
+        LOG.info(message);
+        throw new YarnException(message);
+      }
+    }
+
     try {
       deleteZKNode(serviceName);
       // don't set destroySucceed to false if no ZK node exists because not
@@ -984,6 +1000,10 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     submissionContext.setMaxAppAttempts(YarnServiceConf
         .getInt(YarnServiceConf.AM_RESTART_MAX, DEFAULT_AM_RESTART_MAX, app
             .getConfiguration(), conf));
+    submissionContext.setAttemptFailuresValidityInterval(YarnServiceConf
+        .getLong(YarnServiceConf.AM_FAILURES_VALIDITY_INTERVAL,
+            DEFAULT_AM_FAILURES_VALIDITY_INTERVAL, app.getConfiguration(),
+            conf));
 
     setLogAggregationContext(app, conf, submissionContext);
 
@@ -1189,7 +1209,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
           .append(entry.getValue().getResource().getFile())
           .append(System.lineSeparator());
     }
-    LOG.debug(builder.toString());
+    LOG.debug("{}", builder);
   }
 
   private String buildCommandLine(Service app, Configuration conf,
@@ -1201,6 +1221,9 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     if (!jvmOpts.contains("-Xmx")) {
       jvmOpts += DEFAULT_AM_JVM_XMX;
     }
+
+    // validate possible command injection.
+    ServiceApiUtil.validateJvmOpts(jvmOpts);
 
     CLI.setJVMOpts(jvmOpts);
     if (hasSliderAMLog4j) {
@@ -1234,11 +1257,15 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     return cmdStr;
   }
 
-  private Map<String, String> addAMEnv() throws IOException {
+  @VisibleForTesting
+  protected Map<String, String> addAMEnv() throws IOException {
     Map<String, String> env = new HashMap<>();
-    ClasspathConstructor classpath =
-        buildClasspath(YarnServiceConstants.SUBMITTED_CONF_DIR, "lib", fs, getConfig()
-            .getBoolean(YarnConfiguration.IS_MINI_YARN_CLUSTER, false));
+    ClasspathConstructor classpath = buildClasspath(
+        YarnServiceConstants.SUBMITTED_CONF_DIR,
+        "lib",
+        fs,
+        getConfig().get(YarnServiceConf.YARN_SERVICE_CLASSPATH, ""),
+        getConfig().getBoolean(YarnConfiguration.IS_MINI_YARN_CLUSTER, false));
     env.put("CLASSPATH", classpath.buildClasspath());
     env.put("LANG", "en_US.UTF-8");
     env.put("LC_ALL", "en_US.UTF-8");
@@ -1249,7 +1276,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     }
     if (!UserGroupInformation.isSecurityEnabled()) {
       String userName = UserGroupInformation.getCurrentUser().getUserName();
-      LOG.debug("Run as user " + userName);
+      LOG.debug("Run as user {}", userName);
       // HADOOP_USER_NAME env is used by UserGroupInformation when log in
       // This env makes AM run as this user
       env.put("HADOOP_USER_NAME", userName);
@@ -1307,7 +1334,8 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
             new Path(remoteConfPath, YarnServiceConstants.YARN_SERVICE_LOG4J_FILENAME);
         copy(conf, localFilePath, remoteFilePath);
         LocalResource localResource =
-            fs.createAmResource(remoteConfPath, LocalResourceType.FILE);
+            fs.createAmResource(remoteConfPath, LocalResourceType.FILE,
+            LocalResourceVisibility.APPLICATION);
         localResources.put(localFilePath.getName(), localResource);
         hasAMLog4j = true;
       } else {
@@ -1343,7 +1371,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       LOG.info("Persisted service " + service.getName() + " at " + appJson);
       return appId;
     } else {
-      LOG.info("Finalize service {} upgrade");
+      LOG.info("Finalize service {} upgrade", serviceName);
       ApplicationId appId = getAppId(serviceName);
       ApplicationReport appReport = yarnClient.getApplicationReport(appId);
       if (StringUtils.isEmpty(appReport.getHost())) {
@@ -1405,7 +1433,7 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       if (LOG.isDebugEnabled()) {
         if (tokens != null && tokens.length != 0) {
           for (Token<?> token : tokens) {
-            LOG.debug("Got DT: " + token);
+            LOG.debug("Got DT: {}", token);
           }
         }
       }
@@ -1450,18 +1478,18 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
     if ("file".equals(keytabURI.getScheme())) {
       LOG.info("Using a keytab from localhost: " + keytabURI);
     } else {
-      Path keytabOnhdfs = new Path(keytabURI);
-      if (!fileSystem.getFileSystem().exists(keytabOnhdfs)) {
+      Path keytabPath = new Path(keytabURI);
+      if (!fileSystem.getFileSystem().exists(keytabPath)) {
         LOG.warn(service.getName() + "'s keytab (principalName = "
-            + principalName + ") doesn't exist at: " + keytabOnhdfs);
+            + principalName + ") doesn't exist at: " + keytabPath);
         return;
       }
-      LocalResource keytabRes = fileSystem.createAmResource(keytabOnhdfs,
-          LocalResourceType.FILE);
+      LocalResource keytabRes = fileSystem.createAmResource(keytabPath,
+          LocalResourceType.FILE, LocalResourceVisibility.PRIVATE);
       localResource.put(String.format(YarnServiceConstants.KEYTAB_LOCATION,
           service.getName()), keytabRes);
       LOG.info("Adding " + service.getName() + "'s keytab for "
-          + "localization, uri = " + keytabOnhdfs);
+          + "localization, uri = " + keytabPath);
     }
   }
 
@@ -1554,7 +1582,17 @@ public class ServiceClient extends AppAdminClient implements SliderExitCodes,
       return appSpec;
     }
     appSpec.setId(currentAppId.toString());
-    ApplicationReport appReport = yarnClient.getApplicationReport(currentAppId);
+    ApplicationReport appReport = null;
+    try {
+      appReport = yarnClient.getApplicationReport(currentAppId);
+    } catch (ApplicationNotFoundException e) {
+      LOG.info("application ID {} doesn't exist", currentAppId);
+      return appSpec;
+    }
+    if (appReport == null) {
+      LOG.warn("application ID {} is reported as null", currentAppId);
+      return appSpec;
+    }
     appSpec.setState(convertState(appReport.getYarnApplicationState()));
     ApplicationTimeout lifetime =
         appReport.getApplicationTimeouts().get(ApplicationTimeoutType.LIFETIME);

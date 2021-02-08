@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
@@ -130,11 +130,11 @@ public class NMClientImpl extends NMClient {
       } catch (YarnException e) {
         LOG.error("Failed to stop Container " +
             startedContainer.getContainerId() +
-            "when stopping NMClientImpl");
+            " when stopping NMClientImpl");
       } catch (IOException e) {
         LOG.error("Failed to stop Container " +
             startedContainer.getContainerId() +
-            "when stopping NMClientImpl");
+            " when stopping NMClientImpl");
       }
     }
   }

@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.api.records.impl.pb;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -75,14 +75,14 @@ public class ResourcePBImpl extends Resource {
     initResources();
   }
 
-  public ResourceProto getProto() {
+  synchronized public ResourceProto getProto() {
     mergeLocalToProto();
     proto = viaProto ? proto : builder.build();
     viaProto = true;
     return proto;
   }
 
-  private void maybeInitBuilder() {
+  synchronized private void maybeInitBuilder() {
     if (viaProto || builder == null) {
       builder = ResourceProto.newBuilder(proto);
     }
@@ -131,7 +131,7 @@ public class ResourcePBImpl extends Resource {
     resources[VCORES_INDEX].setValue(vCores);
   }
 
-  private void initResources() {
+  synchronized private void initResources() {
     if (this.resources != null) {
       return;
     }

@@ -22,7 +22,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
@@ -180,6 +180,12 @@ public abstract class BlockInfo extends Block
 
   /** @return true if there is no datanode storage associated with the block */
   abstract boolean hasNoStorage();
+
+  /**
+   * Checks whether this block has a Provided replica.
+   * @return true if this block has a replica on Provided storage.
+   */
+  abstract boolean isProvided();
 
   /**
    * Find specified DatanodeStorageInfo.

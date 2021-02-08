@@ -28,7 +28,7 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import java.util.List;
 
 /**
@@ -70,7 +70,7 @@ public abstract class YarnAuthorizationProvider {
   public static void destroy() {
     synchronized (YarnAuthorizationProvider.class) {
       if (authorizer != null) {
-        LOG.debug(authorizer.getClass().getName() + " is destroyed.");
+        LOG.debug("{} is destroyed.", authorizer.getClass().getName());
         authorizer = null;
       }
     }

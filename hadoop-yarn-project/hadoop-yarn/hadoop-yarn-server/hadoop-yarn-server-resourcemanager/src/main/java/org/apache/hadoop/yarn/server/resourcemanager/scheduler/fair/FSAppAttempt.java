@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -99,6 +100,9 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
   private final Map<String, Set<String>> reservations = new HashMap<>();
 
   private final List<FSSchedulerNode> blacklistNodeIds = new ArrayList<>();
+
+  private boolean enableAMPreemption;
+
   /**
    * Delay scheduling: We often want to prioritize scheduling of node-local
    * containers over rack-local or off-switch containers. To achieve this
@@ -121,6 +125,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     this.startTime = scheduler.getClock().getTime();
     this.lastTimeAtFairShare = this.startTime;
     this.appPriority = Priority.newInstance(1);
+    this.enableAMPreemption = scheduler.getConf()
+            .getAMPreemptionEnabled(getQueue().getQueueName());
   }
 
   /**
@@ -150,10 +156,9 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       // Inform the container
       rmContainer.handle(
           new RMContainerFinishedEvent(containerId, containerStatus, event));
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Completed container: " + rmContainer.getContainerId()
-            + " in state: " + rmContainer.getState() + " event:" + event);
-      }
+      LOG.debug("Completed container: {} in state: {} event:{}",
+          rmContainer.getContainerId(), rmContainer.getState(), event);
+
 
       untrackContainerForPreemption(rmContainer);
       if (containerStatus.getDiagnostics().
@@ -247,14 +252,11 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
 
     Resource headroom = policy.getHeadroom(queueFairShare,
         queueUsage, maxAvailableResource);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Headroom calculation for " + this.getName() + ":" +
-          "Min(" +
-          "(queueFairShare=" + queueFairShare +
-          " - queueUsage=" + queueUsage + ")," +
-          " maxAvailableResource=" + maxAvailableResource +
-          "Headroom=" + headroom);
-    }
+    LOG.debug("Headroom calculation for {}:Min((queueFairShare={} -"
+        + " queueUsage={}), maxAvailableResource={} Headroom={}",
+        this.getName(), queueFairShare, queueUsage, maxAvailableResource,
+        headroom);
+
     return headroom;
   }
 
@@ -363,11 +365,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
         // add the initial time of priority to prevent comparing with FsApp
         // startTime and allowedLocalityLevel degrade
         lastScheduledContainer.put(schedulerKey, currentTimeMs);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug(
-              "Init the lastScheduledContainer time, priority: " + schedulerKey
-                  .getPriority() + ", time: " + currentTimeMs);
-        }
+        LOG.debug("Init the lastScheduledContainer time, priority: {},"
+            + " time: {}", schedulerKey.getPriority(), currentTimeMs);
         allowedLocalityLevel.put(schedulerKey, NodeType.NODE_LOCAL);
         return NodeType.NODE_LOCAL;
       }
@@ -463,7 +462,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       liveContainers.put(container.getId(), rmContainer);
       // Update consumption and track allocations
       ContainerRequest containerRequest = appSchedulingInfo.allocate(
-          type, node, schedulerKey, container);
+            type, node, schedulerKey, rmContainer);
       this.attemptResourceUsage.incUsed(container.getResource());
       getQueue().incUsedResource(container.getResource());
 
@@ -596,6 +595,10 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       return false;
     }
 
+    if (container.isAMContainer() && !enableAMPreemption) {
+      return false;
+    }
+
     // Sanity check that the app owns this container
     if (!getLiveContainersMap().containsKey(container.getContainerId()) &&
         !newlyAllocatedContainers.contains(container)) {
@@ -690,7 +693,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
   /**
    * Reserve a spot for {@code container} on this {@code node}. If
    * the container is {@code alreadyReserved} on the node, simply
-   * update relevant bookeeping. This dispatches ro relevant handlers
+   * update relevant bookkeeping. This dispatches ro relevant handlers
    * in {@link FSSchedulerNode}..
    * return whether reservation was possible with the current threshold limits
    */
@@ -867,12 +870,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
         if (reserved) {
           unreserve(schedulerKey, node);
         }
-        if (LOG.isDebugEnabled()) {
-          LOG.debug(String.format(
-              "Resource ask %s fits in available node resources %s, " +
-                      "but no container was allocated",
-              capability, available));
-        }
+        LOG.debug("Resource ask {} fits in available node resources {},"
+            + " but no container was allocated", capability, available);
         return Resources.none();
       }
 
@@ -896,10 +895,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       return capability;
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Resource request: " + capability + " exceeds the available"
-          + " resources of the node.");
-    }
+    LOG.debug("Resource request: {} exceeds the available"
+          + " resources of the node.", capability);
 
     // The desired container won't fit here, so reserve
     // Reserve only, if app does not wait for preempted resources on the node,
@@ -910,9 +907,7 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
             type, schedulerKey)) {
       updateAMDiagnosticMsg(capability, " exceeds the available resources of "
           + "the node and the request is reserved)");
-      if (LOG.isDebugEnabled()) {
-        LOG.debug(getName() + "'s resource request is reserved.");
-      }
+      LOG.debug("{}'s resource request is reserved.", getName());
       return FairScheduler.CONTAINER_RESERVED;
     } else {
       updateAMDiagnosticMsg(capability, " exceeds the available resources of "
@@ -941,8 +936,8 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
     if (!isAmRunning() && !getUnmanagedAM()) {
       // Return true if we have not ask, or queue is not be able to run app's AM
       PendingAsk ask = appSchedulingInfo.getNextPendingAsk();
-      if (ask.getCount() == 0 || !getQueue().canRunAppAM(
-          ask.getPerAllocationResource())) {
+      if (ask != null && (ask.getCount() == 0 || !getQueue().canRunAppAM(
+          ask.getPerAllocationResource()))) {
         return true;
       }
     }
@@ -1398,12 +1393,12 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
       return;
     }
 
-    StringBuilder diagnosticMessageBldr = new StringBuilder();
-    diagnosticMessageBldr.append(" (Resource request: ")
+    StringBuilder diagnosticMessage = new StringBuilder();
+    diagnosticMessage.append(" (Resource request: ")
         .append(resource)
         .append(reason);
     updateAMContainerDiagnostics(AMState.INACTIVATED,
-        diagnosticMessageBldr.toString());
+        diagnosticMessage.toString());
   }
 
   /*
@@ -1430,5 +1425,10 @@ public class FSAppAttempt extends SchedulerApplicationAttempt
   @Override
   public boolean isPreemptable() {
     return getQueue().isPreemptable();
+  }
+
+  @VisibleForTesting
+  public void setEnableAMPreemption(boolean enableAMPreemption) {
+    this.enableAMPreemption = enableAMPreemption;
   }
 }

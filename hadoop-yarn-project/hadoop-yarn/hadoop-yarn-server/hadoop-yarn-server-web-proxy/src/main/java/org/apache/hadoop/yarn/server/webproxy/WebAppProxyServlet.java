@@ -45,7 +45,7 @@ import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriBuilderException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
@@ -248,9 +248,7 @@ public class WebAppProxyServlet extends HttpServlet {
     // since that is what the AM filter checks against. IP aliasing or
     // similar could cause issues otherwise.
     InetAddress localAddress = InetAddress.getByName(proxyHost);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("local InetAddress for proxy host: {}", localAddress);
-    }
+    LOG.debug("local InetAddress for proxy host: {}", localAddress);
     httpClientBuilder.setDefaultRequestConfig(
         RequestConfig.custom()
         .setCircularRedirectsAllowed(true)
@@ -284,9 +282,7 @@ public class WebAppProxyServlet extends HttpServlet {
       String name = names.nextElement();
       if (PASS_THROUGH_HEADERS.contains(name)) {
         String value = req.getHeader(name);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("REQ HEADER: {} : {}", name, value);
-        }
+        LOG.debug("REQ HEADER: {} : {}", name, value);
         base.setHeader(name, value);
       }
     }

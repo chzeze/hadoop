@@ -19,6 +19,7 @@ import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.security.authentication.client.KerberosAuthenticator;
 import org.apache.hadoop.security.authentication.util.*;
+import org.eclipse.jetty.server.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -619,11 +620,20 @@ public class AuthenticationFilter implements Filter {
                 KerberosAuthenticator.WWW_AUTHENTICATE))) {
           errCode = HttpServletResponse.SC_FORBIDDEN;
         }
+        // After Jetty 9.4.21, sendError() no longer allows a custom message.
+        // use setStatusWithReason() to set a custom message.
+        String reason;
         if (authenticationEx == null) {
-          httpResponse.sendError(errCode, "Authentication required");
+          reason = "Authentication required";
         } else {
-          httpResponse.sendError(errCode, authenticationEx.getMessage());
+          reason = authenticationEx.getMessage();
         }
+
+        if (httpResponse instanceof Response) {
+          ((Response)httpResponse).setStatusWithReason(errCode, reason);
+        }
+
+        httpResponse.sendError(errCode, reason);
       }
     }
   }
@@ -681,7 +691,7 @@ public class AuthenticationFilter implements Filter {
     if (expires >= 0 && isCookiePersistent) {
       Date date = new Date(expires);
       SimpleDateFormat df = new SimpleDateFormat("EEE, " +
-              "dd-MMM-yyyy HH:mm:ss zzz");
+              "dd-MMM-yyyy HH:mm:ss zzz", Locale.US);
       df.setTimeZone(TimeZone.getTimeZone("GMT"));
       sb.append("; Expires=").append(df.format(date));
     }

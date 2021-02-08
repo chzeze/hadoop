@@ -18,14 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -34,20 +33,22 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.metrics.CustomResourceMetricValue;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmnode.RMNode;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetricsCustomResource;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeAddedSchedulerEvent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeUpdateSchedulerEvent;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.allocationfile.AllocationFileQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.allocationfile.AllocationFileWriter;
 import org.apache.hadoop.yarn.util.resource.Resources;
 import org.junit.After;
 import org.junit.Before;
@@ -90,8 +91,9 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
     String queueName = "root.queue1";
     FSLeafQueue schedulable = new FSLeafQueue(queueName, scheduler, null);
     schedulable.setMaxShare(new ConfigurableResource(maxResource));
-    assertEquals(schedulable.getMetrics().getMaxApps(), Integer.MAX_VALUE);
-    assertEquals(schedulable.getMetrics().getSchedulingPolicy(),
+    assertThat(schedulable.getMetrics().getMaxApps()).
+        isEqualTo(Integer.MAX_VALUE);
+    assertThat(schedulable.getMetrics().getSchedulingPolicy()).isEqualTo(
         SchedulingPolicy.DEFAULT_POLICY.getName());
 
     FSAppAttempt app = mock(FSAppAttempt.class);
@@ -108,24 +110,21 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
   }
 
   @Test (timeout = 5000)
-  public void test() throws Exception {
+  public void test() {
     conf.set(FairSchedulerConfiguration.ALLOCATION_FILE, ALLOC_FILE);
-    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
-    out.println("<?xml version=\"1.0\"?>");
-    out.println("<allocations>");
-    out.println("<queueMaxAMShareDefault>" + MAX_AM_SHARE +
-        "</queueMaxAMShareDefault>");
-    out.println("<queue name=\"queueA\"></queue>");
-    out.println("<queue name=\"queueB\"></queue>");
-    out.println("</allocations>");
-    out.close();
+
+    AllocationFileWriter.create()
+        .queueMaxAMShareDefault(MAX_AM_SHARE)
+        .addQueue(new AllocationFileQueue.Builder("queueA").build())
+        .addQueue(new AllocationFileQueue.Builder("queueB").build())
+        .writeToFile(ALLOC_FILE);
 
     resourceManager = new MockRM(conf);
     resourceManager.start();
     scheduler = (FairScheduler) resourceManager.getResourceScheduler();
     for(FSQueue queue: scheduler.getQueueManager().getQueues()) {
-      assertEquals(queue.getMetrics().getMaxApps(), Integer.MAX_VALUE);
-      assertEquals(queue.getMetrics().getSchedulingPolicy(),
+      assertThat(queue.getMetrics().getMaxApps()).isEqualTo(Integer.MAX_VALUE);
+      assertThat(queue.getMetrics().getSchedulingPolicy()).isEqualTo(
           SchedulingPolicy.DEFAULT_POLICY.getName());
     }
 
@@ -345,7 +344,7 @@ public class TestFSLeafQueue extends FairSchedulerTestBase {
 
   private Map<String, Long> verifyQueueMetricsForCustomResources(
       FSLeafQueue schedulable) {
-    QueueMetricsCustomResource maxAMShareCustomResources =
+    CustomResourceMetricValue maxAMShareCustomResources =
         schedulable.getMetrics().getCustomResources().getMaxAMShare();
     Map<String, Long> customResourceValues = maxAMShareCustomResources
         .getValues();

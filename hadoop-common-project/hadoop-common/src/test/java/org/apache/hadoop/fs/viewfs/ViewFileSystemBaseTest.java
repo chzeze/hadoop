@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.security.PrivilegedExceptionAction;
@@ -27,18 +29,23 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.BlockStoragePolicySpi;
+import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileSystemTestHelper;
 import org.apache.hadoop.fs.FsConstants;
 import org.apache.hadoop.fs.FsStatus;
+import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.TestFileUtil;
 import org.apache.hadoop.fs.Trash;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.fs.contract.ContractTestUtils;
@@ -54,6 +61,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assume;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import static org.apache.hadoop.fs.FileSystemTestHelper.*;
@@ -64,9 +73,10 @@ import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 
+import static org.apache.hadoop.test.GenericTestUtils.assertExceptionContains;
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.*;
-
 
 /**
  * <p>
@@ -104,6 +114,9 @@ abstract public class ViewFileSystemBaseTest {
   protected FileSystemTestHelper createFileSystemHelper() {
     return new FileSystemTestHelper();
   }
+
+  @Rule
+  public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   @Before
   public void setUp() throws Exception {
@@ -473,10 +486,10 @@ abstract public class ViewFileSystemBaseTest {
     Assert.assertEquals(targetBL.length, viewBL.length);
     int i = 0;
     for (BlockLocation vbl : viewBL) {
-      Assert.assertEquals(vbl.toString(), targetBL[i].toString());
-      Assert.assertEquals(targetBL[i].getOffset(), vbl.getOffset());
-      Assert.assertEquals(targetBL[i].getLength(), vbl.getLength());
-      i++;     
+      assertThat(vbl.toString(), equalTo(targetBL[i].toString()));
+      assertThat(vbl.getOffset(), equalTo(targetBL[i].getOffset()));
+      assertThat(vbl.getLength(), equalTo(targetBL[i].getLength()));
+      i++;
     } 
   }
 
@@ -1270,6 +1283,151 @@ abstract public class ViewFileSystemBaseTest {
       LOG.info("Expected exception: " + e);
       assertThat(e.getMessage(),
           containsString("File does not exist:"));
+    }
+  }
+
+  @Test
+  public void testViewFileSystemInnerCache() throws Exception {
+    ViewFileSystem.InnerCache cache =
+        new ViewFileSystem.InnerCache(new FsGetter());
+    FileSystem fs = cache.get(fsTarget.getUri(), conf);
+
+    // InnerCache caches filesystem.
+    assertSame(fs, cache.get(fsTarget.getUri(), conf));
+
+    // InnerCache and FileSystem.CACHE are independent.
+    assertNotSame(fs, FileSystem.get(fsTarget.getUri(), conf));
+
+    // close InnerCache.
+    cache.closeAll();
+    try {
+      fs.exists(new Path("/"));
+      if (!(fs instanceof LocalFileSystem)) {
+        // Ignore LocalFileSystem because it can still be used after close.
+        fail("Expect Filesystem closed exception");
+      }
+    } catch (IOException e) {
+      assertExceptionContains("Filesystem closed", e);
+    }
+  }
+
+  @Test
+  public void testCloseChildrenFileSystem() throws Exception {
+    final String clusterName = "cluster" + new Random().nextInt();
+    Configuration config = new Configuration(conf);
+    ConfigUtil.addLink(config, clusterName, "/user",
+        new Path(targetTestRoot, "user").toUri());
+    config.setBoolean("fs.viewfs.impl.disable.cache", false);
+    URI uri = new URI("viewfs://" + clusterName + "/");
+
+    ViewFileSystem viewFs = (ViewFileSystem) FileSystem.get(uri, config);
+    assertTrue("viewfs should have at least one child fs.",
+        viewFs.getChildFileSystems().length > 0);
+    // viewFs is cached in FileSystem.CACHE
+    assertSame(viewFs, FileSystem.get(uri, config));
+
+    // child fs is not cached in FileSystem.CACHE
+    FileSystem child = viewFs.getChildFileSystems()[0];
+    assertNotSame(child, FileSystem.get(child.getUri(), config));
+
+    viewFs.close();
+    for (FileSystem childfs : viewFs.getChildFileSystems()) {
+      try {
+        childfs.exists(new Path("/"));
+        if (!(childfs instanceof LocalFileSystem)) {
+          // Ignore LocalFileSystem because it can still be used after close.
+          fail("Expect Filesystem closed exception");
+        }
+      } catch (IOException e) {
+        assertExceptionContains("Filesystem closed", e);
+      }
+    }
+  }
+
+  @Test
+  public void testChildrenFileSystemLeak() throws Exception {
+    final String clusterName = "cluster" + new Random().nextInt();
+    Configuration config = new Configuration(conf);
+    ConfigUtil.addLink(config, clusterName, "/user",
+        new Path(targetTestRoot, "user").toUri());
+
+    final int cacheSize = TestFileUtil.getCacheSize();
+    ViewFileSystem viewFs = (ViewFileSystem) FileSystem
+        .get(new URI("viewfs://" + clusterName + "/"), config);
+    assertEquals(cacheSize + 1, TestFileUtil.getCacheSize());
+    viewFs.close();
+    assertEquals(cacheSize, TestFileUtil.getCacheSize());
+  }
+
+  @Test
+  public void testDeleteOnExit() throws Exception {
+    final String clusterName = "cluster" + new Random().nextInt();
+    Configuration config = new Configuration(conf);
+    ConfigUtil.addLink(config, clusterName, "/user",
+        new Path(targetTestRoot, "user").toUri());
+
+    Path testDir = new Path("/user/testDeleteOnExit");
+    Path realTestPath = new Path(targetTestRoot, "user/testDeleteOnExit");
+    ViewFileSystem viewFs = (ViewFileSystem) FileSystem
+        .get(new URI("viewfs://" + clusterName + "/"), config);
+    viewFs.mkdirs(testDir);
+    assertTrue(viewFs.exists(testDir));
+    assertTrue(fsTarget.exists(realTestPath));
+
+    viewFs.deleteOnExit(testDir);
+    viewFs.close();
+    assertFalse(fsTarget.exists(realTestPath));
+  }
+
+  @Test
+  public void testGetContentSummary() throws IOException {
+    ContentSummary summaryBefore =
+        fsView.getContentSummary(new Path("/internalDir"));
+    String expected = "GET CONTENT SUMMARY";
+    Path filePath =
+        new Path("/internalDir/internalDir2/linkToDir3", "foo");
+
+    try (FSDataOutputStream outputStream = fsView.create(filePath)) {
+      outputStream.write(expected.getBytes());
+    }
+
+    Path newDirPath = new Path("/internalDir/linkToDir2", "bar");
+    fsView.mkdirs(newDirPath);
+
+    ContentSummary summaryAfter =
+        fsView.getContentSummary(new Path("/internalDir"));
+    assertEquals("The file count didn't match",
+        summaryBefore.getFileCount() + 1,
+        summaryAfter.getFileCount());
+    assertEquals("The size didn't match",
+        summaryBefore.getLength() + expected.length(),
+        summaryAfter.getLength());
+    assertEquals("The directory count didn't match",
+        summaryBefore.getDirectoryCount() + 1,
+        summaryAfter.getDirectoryCount());
+  }
+
+  @Test
+  public void testGetContentSummaryWithFileInLocalFS() throws Exception {
+    ContentSummary summaryBefore =
+        fsView.getContentSummary(new Path("/internalDir"));
+    String expected = "GET CONTENT SUMMARY";
+    File localFile = temporaryFolder.newFile("localFile");
+    try (FileOutputStream fos = new FileOutputStream(localFile)) {
+      fos.write(expected.getBytes());
+    }
+    ConfigUtil.addLink(conf,
+        "/internalDir/internalDir2/linkToLocalFile", localFile.toURI());
+
+    try (FileSystem fs = FileSystem.get(FsConstants.VIEWFS_URI, conf)) {
+      ContentSummary summaryAfter =
+          fs.getContentSummary(new Path("/internalDir"));
+      assertEquals("The file count didn't match",
+          summaryBefore.getFileCount() + 1,
+          summaryAfter.getFileCount());
+      assertEquals("The directory count didn't match",
+          summaryBefore.getLength() + expected.length(),
+          summaryAfter.getLength());
     }
   }
 }

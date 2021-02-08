@@ -34,7 +34,7 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.LayoutFlags;
 import org.apache.hadoop.io.IOUtils;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * An implementation of the abstract class {@link EditLogOutputStream}, which
@@ -95,7 +95,7 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
 
   @Override
   public void write(FSEditLogOp op) throws IOException {
-    doubleBuf.writeOp(op);
+    doubleBuf.writeOp(op, getCurrentLogVersion());
   }
 
   /**
@@ -121,6 +121,7 @@ public class EditLogFileOutputStream extends EditLogOutputStream {
     writeHeader(layoutVersion, doubleBuf.getCurrentBuf());
     setReadyToFlush();
     flush();
+    setCurrentLogVersion(layoutVersion);
   }
 
   /**

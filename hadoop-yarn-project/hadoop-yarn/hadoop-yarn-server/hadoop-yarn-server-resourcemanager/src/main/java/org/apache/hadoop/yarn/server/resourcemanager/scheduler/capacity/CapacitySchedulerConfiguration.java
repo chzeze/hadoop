@@ -18,9 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.ipc.WeightedTimeCostProvider;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.MappingRule;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.QueuePlacementRuleUtils;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.placement.MappingRuleCreator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -39,17 +43,20 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.security.AccessType;
 import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
-import org.apache.hadoop.yarn.server.resourcemanager.placement.QueueMappingEntity;
-import org.apache.hadoop.yarn.server.resourcemanager.placement.UserGroupMappingPlacementRule.QueueMapping;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.QueueMapping;
+import org.apache.hadoop.yarn.server.resourcemanager.placement.QueueMapping.QueueMappingBuilder;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.ReservationSchedulerConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AppPriorityACLConfigurationParser.AppPriorityACLKeyType;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.WorkflowPriorityMappingsManager.WorkflowPriorityMapping;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.policy.PriorityUtilizationQueueOrderingPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.policy.QueueOrderingPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.MultiNodeLookupPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.placement.MultiNodePolicySpec;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FairOrderingPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FifoOrderingPolicy;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FifoOrderingPolicyForPendingApps;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.FifoOrderingPolicyWithExclusivePartitions;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.OrderingPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy.SchedulableEntity;
 import org.apache.hadoop.yarn.util.UnitsConversionUtil;
@@ -58,6 +65,7 @@ import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceUtils;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -70,7 +78,6 @@ import java.util.Map.Entry;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Set;
-import java.util.StringTokenizer;
 
 public class CapacitySchedulerConfiguration extends ReservationSchedulerConfiguration {
 
@@ -161,6 +168,12 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   public static final String FIFO_APP_ORDERING_POLICY = "fifo";
 
   public static final String FAIR_APP_ORDERING_POLICY = "fair";
+
+  public static final String FIFO_WITH_PARTITIONS_APP_ORDERING_POLICY
+      = "fifo-with-partitions";
+
+  public static final String FIFO_FOR_PENDING_APPS
+      = "fifo-for-pending-apps";
 
   public static final String DEFAULT_APP_ORDERING_POLICY =
       FIFO_APP_ORDERING_POLICY;
@@ -271,10 +284,25 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   public static final String QUEUE_MAPPING = PREFIX + "queue-mappings";
 
   @Private
+  public static final String QUEUE_MAPPING_NAME =
+      YarnConfiguration.QUEUE_PLACEMENT_RULES + ".app-name";
+
+  @Private
   public static final String ENABLE_QUEUE_MAPPING_OVERRIDE = QUEUE_MAPPING + "-override.enable";
 
   @Private
   public static final boolean DEFAULT_ENABLE_QUEUE_MAPPING_OVERRIDE = false;
+
+  @Private
+  public static final String WORKFLOW_PRIORITY_MAPPINGS =
+      PREFIX + "workflow-priority-mappings";
+
+  @Private
+  public static final String ENABLE_WORKFLOW_PRIORITY_MAPPINGS_OVERRIDE =
+      WORKFLOW_PRIORITY_MAPPINGS + "-override.enable";
+
+  @Private
+  public static final boolean DEFAULT_ENABLE_WORKFLOW_PRIORITY_MAPPINGS_OVERRIDE = false;
 
   @Private
   public static final String QUEUE_PREEMPTION_DISABLED = "disable_preemption";
@@ -356,7 +384,30 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
 
   public static final String PATTERN_FOR_ABSOLUTE_RESOURCE = "^\\[[\\w\\.,\\-_=\\ /]+\\]$";
 
-  private static final Pattern RESOURCE_PATTERN = Pattern.compile(PATTERN_FOR_ABSOLUTE_RESOURCE);
+  public static final Pattern RESOURCE_PATTERN = Pattern.compile(PATTERN_FOR_ABSOLUTE_RESOURCE);
+
+  private static final String WEIGHT_SUFFIX = "w";
+
+  public static final String MAX_PARALLEL_APPLICATIONS = "max-parallel-apps";
+
+  public static final int DEFAULT_MAX_PARALLEL_APPLICATIONS = Integer.MAX_VALUE;
+
+  public static final String ALLOW_ZERO_CAPACITY_SUM =
+      "allow-zero-capacity-sum";
+
+  public static final boolean DEFAULT_ALLOW_ZERO_CAPACITY_SUM = false;
+  public static final String MAPPING_RULE_FORMAT =
+      PREFIX + "mapping-rule-format";
+  public static final String MAPPING_RULE_JSON =
+      PREFIX + "mapping-rule-json";
+  public static final String MAPPING_RULE_JSON_FILE =
+      PREFIX + "mapping-rule-json-file";
+
+  public static final String MAPPING_RULE_FORMAT_LEGACY = "legacy";
+  public static final String MAPPING_RULE_FORMAT_JSON = "json";
+
+  public static final String MAPPING_RULE_FORMAT_DEFAULT =
+      MAPPING_RULE_FORMAT_LEGACY;
 
   /**
    * Different resource types supported.
@@ -383,7 +434,7 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     }
   }
 
-  static String getQueuePrefix(String queue) {
+  public static String getQueuePrefix(String queue) {
     String queueName = PREFIX + queue + DOT;
     return queueName;
   }
@@ -392,7 +443,11 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     String queueName = PREFIX + queue + DOT + ORDERING_POLICY + DOT;
     return queueName;
   }
-  
+
+  static String getUserPrefix(String user) {
+    return PREFIX + "user." + user + DOT;
+  }
+
   private String getNodeLabelPrefix(String queue, String label) {
     if (label.equals(CommonNodeLabelsManager.NO_LABEL)) {
       return getQueuePrefix(queue);
@@ -439,12 +494,45 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
       float percent) {
     setFloat(getQueuePrefix(queue) + MAXIMUM_AM_RESOURCE_SUFFIX, percent);
   }
-  
+
+  private void throwExceptionForUnexpectedWeight(float weight, String queue,
+      String label) {
+    if ((weight < -1e-6 && Math.abs(weight + 1) > 1e-6) || weight > 10000) {
+      throw new IllegalArgumentException(
+          "Illegal " + "weight=" + weight + " for queue=" + queue + "label="
+              + label
+              + ". Acceptable values: [0, 10000], -1 is same as not set");
+    }
+  }
+
+  public float getNonLabeledQueueWeight(String queue) {
+    String configuredValue = get(getQueuePrefix(queue) + CAPACITY);
+    float weight = extractFloatValueFromWeightConfig(configuredValue);
+    throwExceptionForUnexpectedWeight(weight, queue, "");
+    return weight;
+  }
+
+  public void setNonLabeledQueueWeight(String queue, float weight) {
+    set(getQueuePrefix(queue) + CAPACITY, weight + WEIGHT_SUFFIX);
+  }
+
+  public void setLabeledQueueWeight(String queue, String label, float weight) {
+    set(getNodeLabelPrefix(queue, label) + CAPACITY, weight + WEIGHT_SUFFIX);
+  }
+
+  public float getLabeledQueueWeight(String queue, String label) {
+    String configuredValue = get(getNodeLabelPrefix(queue, label) + CAPACITY);
+    float weight = extractFloatValueFromWeightConfig(configuredValue);
+    throwExceptionForUnexpectedWeight(weight, queue, label);
+    return weight;
+  }
+
   public float getNonLabeledQueueCapacity(String queue) {
     String configuredCapacity = get(getQueuePrefix(queue) + CAPACITY);
-    boolean matcher = (configuredCapacity != null)
+    boolean absoluteResourceConfigured = (configuredCapacity != null)
         && RESOURCE_PATTERN.matcher(configuredCapacity).find();
-    if (matcher) {
+    if (absoluteResourceConfigured || configuredWeightAsCapacity(
+        configuredCapacity)) {
       // Return capacity in percentage as 0 for non-root queues and 100 for
       // root.From AbstractCSQueue, absolute resource will be parsed and
       // updated. Once nodes are added/removed in cluster, capacity in
@@ -462,8 +550,9 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
       throw new IllegalArgumentException(
           "Illegal " + "capacity of " + capacity + " for queue " + queue);
     }
-    LOG.debug("CSConf - getCapacity: queuePrefix=" + getQueuePrefix(queue)
-        + ", capacity=" + capacity);
+    LOG.debug("CSConf - getCapacity: queuePrefix={}, capacity={}",
+        getQueuePrefix(queue), capacity);
+
     return capacity;
   }
   
@@ -473,8 +562,9 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
           "Cannot set capacity, root queue has a fixed capacity of 100.0f");
     }
     setFloat(getQueuePrefix(queue) + CAPACITY, capacity);
-    LOG.debug("CSConf - setCapacity: queuePrefix=" + getQueuePrefix(queue) + 
-        ", capacity=" + capacity);
+    LOG.debug("CSConf - setCapacity: queuePrefix={}, capacity={}",
+        getQueuePrefix(queue), capacity);
+
   }
 
   @VisibleForTesting
@@ -484,8 +574,9 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
           "Cannot set capacity, root queue has a fixed capacity");
     }
     set(getQueuePrefix(queue) + CAPACITY, absoluteResourceCapacity);
-    LOG.debug("CSConf - setCapacity: queuePrefix=" + getQueuePrefix(queue)
-        + ", capacity=" + absoluteResourceCapacity);
+    LOG.debug("CSConf - setCapacity: queuePrefix={}, capacity={}",
+        getQueuePrefix(queue), absoluteResourceCapacity);
+
   }
 
   public float getNonLabeledQueueMaximumCapacity(String queue) {
@@ -515,8 +606,8 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
           "maximum-capacity of " + maxCapacity + " for queue " + queue);
     }
     setFloat(getQueuePrefix(queue) + MAXIMUM_CAPACITY, maxCapacity);
-    LOG.debug("CSConf - setMaxCapacity: queuePrefix=" + getQueuePrefix(queue) + 
-        ", maxCapacity=" + maxCapacity);
+    LOG.debug("CSConf - setMaxCapacity: queuePrefix={}, maxCapacity={}",
+        getQueuePrefix(queue), maxCapacity);
   }
   
   public void setCapacityByLabel(String queue, String label, float capacity) {
@@ -532,6 +623,12 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   public void setMaximumCapacityByLabel(String queue, String label,
       float capacity) {
     setFloat(getNodeLabelPrefix(queue, label) + MAXIMUM_CAPACITY, capacity);
+  }
+
+  public void setMaximumCapacityByLabel(String queue, String label,
+      String absoluteResourceCapacity) {
+    set(getNodeLabelPrefix(queue, label) + MAXIMUM_CAPACITY,
+        absoluteResourceCapacity);
   }
   
   public int getUserLimit(String queue) {
@@ -558,6 +655,13 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     if (policyType.trim().equals(FAIR_APP_ORDERING_POLICY)) {
        policyType = FairOrderingPolicy.class.getName();
     }
+    if (policyType.trim().equals(FIFO_WITH_PARTITIONS_APP_ORDERING_POLICY)) {
+      policyType = FifoOrderingPolicyWithExclusivePartitions.class.getName();
+    }
+    if (policyType.trim().equals(FIFO_FOR_PENDING_APPS)) {
+      policyType = FifoOrderingPolicyForPendingApps.class.getName();
+    }
+
     try {
       orderingPolicy = (OrderingPolicy<S>)
         Class.forName(policyType).newInstance();
@@ -579,8 +683,8 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
 
   public void setUserLimit(String queue, int userLimit) {
     setInt(getQueuePrefix(queue) + USER_LIMIT, userLimit);
-    LOG.debug("here setUserLimit: queuePrefix=" + getQueuePrefix(queue) + 
-        ", userLimit=" + getUserLimit(queue));
+    LOG.debug("here setUserLimit: queuePrefix={}, userLimit={}",
+        getQueuePrefix(queue), getUserLimit(queue));
   }
   
   public float getUserLimitFactor(String queue) {
@@ -661,31 +765,51 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     }
     return Collections.unmodifiableSet(set);
   }
-  
-  private float internalGetLabeledQueueCapacity(String queue, String label, String suffix,
-      float defaultValue) {
+
+  private boolean configuredWeightAsCapacity(String configureValue) {
+    if (configureValue == null) {
+      return false;
+    }
+    return configureValue.endsWith(WEIGHT_SUFFIX);
+  }
+
+  private float extractFloatValueFromWeightConfig(String configureValue) {
+    if (!configuredWeightAsCapacity(configureValue)) {
+      return -1f;
+    } else {
+      return Float.valueOf(
+          configureValue.substring(0, configureValue.indexOf(WEIGHT_SUFFIX)));
+    }
+  }
+
+  private float internalGetLabeledQueueCapacity(String queue, String label,
+      String suffix, float defaultValue) {
     String capacityPropertyName = getNodeLabelPrefix(queue, label) + suffix;
     String configuredCapacity = get(capacityPropertyName);
-    boolean matcher = (configuredCapacity != null)
-        && RESOURCE_PATTERN.matcher(configuredCapacity).find();
-    if (matcher) {
+    boolean absoluteResourceConfigured =
+        (configuredCapacity != null) && RESOURCE_PATTERN.matcher(
+            configuredCapacity).find();
+    if (absoluteResourceConfigured || configuredWeightAsCapacity(
+        configuredCapacity)) {
       // Return capacity in percentage as 0 for non-root queues and 100 for
-      // root.From AbstractCSQueue, absolute resource will be parsed and
-      // updated. Once nodes are added/removed in cluster, capacity in
-      // percentage will also be re-calculated.
+      // root.From AbstractCSQueue, absolute resource, and weight will be parsed
+      // and updated separately. Once nodes are added/removed in cluster,
+      // capacity is percentage will also be re-calculated.
       return defaultValue;
     }
 
     float capacity = getFloat(capacityPropertyName, defaultValue);
     if (capacity < MINIMUM_CAPACITY_VALUE
         || capacity > MAXIMUM_CAPACITY_VALUE) {
-      throw new IllegalArgumentException("Illegal capacity of " + capacity
-          + " for node-label=" + label + " in queue=" + queue
-          + ", valid capacity should in range of [0, 100].");
+      throw new IllegalArgumentException(
+          "Illegal capacity of " + capacity + " for node-label=" + label
+              + " in queue=" + queue
+              + ", valid capacity should in range of [0, 100].");
     }
     if (LOG.isDebugEnabled()) {
-      LOG.debug("CSConf - getCapacityOfLabel: prefix="
-          + getNodeLabelPrefix(queue, label) + ", capacity=" + capacity);
+      LOG.debug(
+          "CSConf - getCapacityOfLabel: prefix=" + getNodeLabelPrefix(queue,
+              label) + ", capacity=" + capacity);
     }
     return capacity;
   }
@@ -846,7 +970,8 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   }
 
   public String[] getQueues(String queue) {
-    LOG.debug("CSConf - getQueues called for: queuePrefix=" + getQueuePrefix(queue));
+    LOG.debug("CSConf - getQueues called for: queuePrefix={}",
+        getQueuePrefix(queue));
     String[] queues = getStrings(getQueuePrefix(queue) + QUEUES);
     List<String> trimmedQueueNames = new ArrayList<String>();
     if (null != queues) {
@@ -855,16 +980,18 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
       }
       queues = trimmedQueueNames.toArray(new String[0]);
     }
- 
-    LOG.debug("CSConf - getQueues: queuePrefix=" + getQueuePrefix(queue) + 
-        ", queues=" + ((queues == null) ? "" : StringUtils.arrayToString(queues)));
+
+    LOG.debug("CSConf - getQueues: queuePrefix={}, queues={}",
+        getQueuePrefix(queue),
+        ((queues == null) ? "" : StringUtils.arrayToString(queues)));
+
     return queues;
   }
   
   public void setQueues(String queue, String[] subQueues) {
     set(getQueuePrefix(queue) + QUEUES, StringUtils.arrayToString(subQueues));
-    LOG.debug("CSConf - setQueues: qPrefix=" + getQueuePrefix(queue) + 
-        ", queues=" + StringUtils.arrayToString(subQueues));
+    LOG.debug("CSConf - setQueues: qPrefix={}, queues={}",
+        getQueuePrefix(queue), StringUtils.arrayToString(subQueues));
   }
   
   public Resource getMinimumAllocation() {
@@ -999,25 +1126,30 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     setBoolean(ENABLE_QUEUE_MAPPING_OVERRIDE, overrideWithQueueMappings);
   }
 
-  public List<QueueMappingEntity> getQueueMappingEntity(
+  public List<QueueMapping> getQueueMappingEntity(
       String queueMappingSuffix) {
     String queueMappingName = buildQueueMappingRuleProperty(queueMappingSuffix);
 
-    List<QueueMappingEntity> mappings =
-        new ArrayList<QueueMappingEntity>();
+    List<QueueMapping> mappings =
+        new ArrayList<QueueMapping>();
     Collection<String> mappingsString =
         getTrimmedStringCollection(queueMappingName);
     for (String mappingValue : mappingsString) {
       String[] mapping =
-          getTrimmedStringCollection(mappingValue, ":")
+          StringUtils.getTrimmedStringCollection(mappingValue, ":")
               .toArray(new String[] {});
       if (mapping.length != 2 || mapping[1].length() == 0) {
         throw new IllegalArgumentException(
             "Illegal queue mapping " + mappingValue);
       }
 
-      QueueMappingEntity m = new QueueMappingEntity(mapping[0], mapping[1]);
-
+      //Mappings should be consistent, and have the parent path parsed
+      // from the beginning
+      QueueMapping m = QueueMapping.QueueMappingBuilder.create()
+          .type(QueueMapping.MappingType.APPLICATION)
+          .source(mapping[0])
+          .parsePathString(mapping[1])
+          .build();
       mappings.add(m);
     }
 
@@ -1032,45 +1164,28 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   }
 
   @VisibleForTesting
-  public void setQueueMappingEntities(List<QueueMappingEntity> queueMappings,
+  public void setQueueMappingEntities(List<QueueMapping> queueMappings,
       String queueMappingSuffix) {
     if (queueMappings == null) {
       return;
     }
 
     List<String> queueMappingStrs = new ArrayList<>();
-    for (QueueMappingEntity mapping : queueMappings) {
-      queueMappingStrs.add(mapping.toString());
+    for (QueueMapping mapping : queueMappings) {
+      queueMappingStrs.add(mapping.toTypelessString());
     }
 
     String mappingRuleProp = buildQueueMappingRuleProperty(queueMappingSuffix);
     setStrings(mappingRuleProp, StringUtils.join(",", queueMappingStrs));
   }
 
-  /**
-   * Returns a collection of strings, trimming leading and trailing whitespeace
-   * on each value
-   *
-   * @param str
-   *          String to parse
-   * @param delim
-   *          delimiter to separate the values
-   * @return Collection of parsed elements.
-   */
-  private static Collection<String> getTrimmedStringCollection(String str,
-      String delim) {
-    List<String> values = new ArrayList<String>();
-    if (str == null)
-      return values;
-    StringTokenizer tokenizer = new StringTokenizer(str, delim);
-    while (tokenizer.hasMoreTokens()) {
-      String next = tokenizer.nextToken();
-      if (next == null || next.trim().isEmpty()) {
-        continue;
-      }
-      values.add(next.trim());
-    }
-    return values;
+  public boolean getOverrideWithWorkflowPriorityMappings() {
+    return getBoolean(ENABLE_WORKFLOW_PRIORITY_MAPPINGS_OVERRIDE,
+        DEFAULT_ENABLE_WORKFLOW_PRIORITY_MAPPINGS_OVERRIDE);
+  }
+
+  public Collection<String> getWorkflowPriorityMappings() {
+    return getTrimmedStringCollection(WORKFLOW_PRIORITY_MAPPINGS);
   }
 
   /**
@@ -1085,7 +1200,7 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
         getTrimmedStringCollection(QUEUE_MAPPING);
     for (String mappingValue : mappingsString) {
       String[] mapping =
-          getTrimmedStringCollection(mappingValue, ":")
+          StringUtils.getTrimmedStringCollection(mappingValue, ":")
               .toArray(new String[] {});
       if (mapping.length != 3 || mapping[1].length() == 0
           || mapping[2].length() == 0) {
@@ -1104,10 +1219,13 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
           throw new IllegalArgumentException(
               "unknown mapping prefix " + mapping[0]);
         }
-        m = new QueueMapping(
-                mappingType,
-                mapping[1],
-                mapping[2]);
+        //forcing the queue path to be split to parent and leafQueue, to make
+        //queue mapping parentPath and queueName consistent
+        m = QueueMappingBuilder.create()
+                .type(mappingType)
+                .source(mapping[1])
+                .parsePathString(mapping[2])
+                .build();
       } catch (Throwable t) {
         throw new IllegalArgumentException(
             "Illegal queue mapping " + mappingValue);
@@ -1119,6 +1237,93 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     }
 
     return mappings;
+  }
+
+  public List<MappingRule> parseLegacyMappingRules() {
+    List<MappingRule> mappings = new ArrayList<MappingRule>();
+    Collection<String> mappingsString =
+        getTrimmedStringCollection(QUEUE_MAPPING);
+
+    for (String mappingValue : mappingsString) {
+      String[] mapping =
+          StringUtils.getTrimmedStringCollection(mappingValue, ":")
+              .toArray(new String[] {});
+      if (mapping.length != 3 || mapping[1].length() == 0
+          || mapping[2].length() == 0) {
+        throw new IllegalArgumentException(
+            "Illegal queue mapping " + mappingValue);
+      }
+
+      if (mapping[0].equals("u") || mapping[0].equals("g")) {
+        mappings.add(MappingRule.createLegacyRule(
+            mapping[0], mapping[1], mapping[2]));
+      } else {
+        throw new IllegalArgumentException(
+            "unknown mapping prefix " + mapping[0]);
+      }
+    }
+
+    mappingsString = getTrimmedStringCollection(QUEUE_MAPPING_NAME);
+    for (String mappingValue : mappingsString) {
+      String[] mapping =
+          StringUtils.getTrimmedStringCollection(mappingValue, ":")
+              .toArray(new String[] {});
+      if (mapping.length != 2 || mapping[1].length() == 0) {
+        throw new IllegalArgumentException(
+            "Illegal queue mapping " + mappingValue);
+      }
+
+      mappings.add(MappingRule.createLegacyRule(mapping[0], mapping[1]));
+    }
+
+    return mappings;
+  }
+
+  public List<MappingRule> parseJSONMappingRules() throws IOException {
+    String mappingJson = get(MAPPING_RULE_JSON, "");
+    String mappingJsonFile = get(MAPPING_RULE_JSON_FILE, "");
+    MappingRuleCreator creator = new MappingRuleCreator();
+
+    if (!mappingJson.equals("")) {
+      LOG.info("Reading mapping rules from provided inline JSON '{}'.",
+          mappingJson);
+      try {
+        return creator.getMappingRulesFromString(mappingJson);
+      } catch (IOException e) {
+        LOG.error("Error parsing mapping rule inline JSON.");
+        throw e;
+      }
+    } else if (!mappingJsonFile.equals("")) {
+      LOG.info("Reading mapping rules from JSON file '{}'.",
+          mappingJsonFile);
+      try {
+        return creator.getMappingRulesFromFile(mappingJsonFile.trim());
+      } catch (IOException e) {
+        LOG.error("Error reading or parsing mapping rule JSON file '{}'.",
+            mappingJsonFile);
+        throw e;
+      }
+    } else {
+      LOG.warn("Mapping rule is set to JSON, but no inline JSON nor a JSON " +
+          "file was provided! Starting with no mapping rules!");
+    }
+
+    return new ArrayList<>();
+  }
+
+  public List<MappingRule> getMappingRules() throws IOException {
+    String mappingFormat =
+        get(MAPPING_RULE_FORMAT, MAPPING_RULE_FORMAT_DEFAULT);
+    if (mappingFormat.equals(MAPPING_RULE_FORMAT_LEGACY)) {
+      return parseLegacyMappingRules();
+    } else if (mappingFormat.equals(MAPPING_RULE_FORMAT_JSON)) {
+      return parseJSONMappingRules();
+    } else {
+      throw new IllegalArgumentException(
+          "Illegal queue mapping format '" + mappingFormat + "' please use '" +
+          MAPPING_RULE_FORMAT_LEGACY + "' or '" + MAPPING_RULE_FORMAT_JSON +
+          "'");
+    }
   }
 
   @Private
@@ -1146,6 +1351,32 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     setStrings(QUEUE_MAPPING, StringUtils.join(",", queueMappingStrs));
   }
 
+
+  @Private
+  @VisibleForTesting
+  public void setAppNameMappings(List<QueueMapping> queueMappings) {
+    if (queueMappings == null) {
+      return;
+    }
+
+    List<String> queueMappingStrs = new ArrayList<>();
+    for (QueueMapping mapping : queueMappings) {
+      String rule = mapping.toString();
+      String[] parts = rule.split(":");
+      queueMappingStrs.add(parts[1] + ":" + parts[2]);
+    }
+
+    setStrings(QUEUE_MAPPING_NAME, StringUtils.join(",", queueMappingStrs));
+  }
+
+  @Private
+  @VisibleForTesting
+  void setWorkflowPriorityMappings(
+      List<WorkflowPriorityMapping> workflowPriorityMappings) {
+    setStrings(WORKFLOW_PRIORITY_MAPPINGS, WorkflowPriorityMappingsManager
+        .getWorkflowPriorityMappingStr(workflowPriorityMappings));
+  }
+
   public boolean isReservable(String queue) {
     boolean isReservable =
         getBoolean(getQueuePrefix(queue) + IS_RESERVABLE, false);
@@ -1154,8 +1385,8 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
 
   public void setReservable(String queue, boolean isReservable) {
     setBoolean(getQueuePrefix(queue) + IS_RESERVABLE, isReservable);
-    LOG.debug("here setReservableQueue: queuePrefix=" + getQueuePrefix(queue)
-        + ", isReservableQueue=" + isReservable(queue));
+    LOG.debug("here setReservableQueue: queuePrefix={}, isReservableQueue={}",
+        getQueuePrefix(queue), isReservable(queue));
   }
 
   @Override
@@ -1354,6 +1585,40 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     return conf.getBoolean(APP_FAIL_FAST, DEFAULT_APP_FAIL_FAST);
   }
 
+  public Integer getMaxParallelAppsForQueue(String queue) {
+    int defaultMaxParallelAppsForQueue =
+        getInt(PREFIX + MAX_PARALLEL_APPLICATIONS,
+        DEFAULT_MAX_PARALLEL_APPLICATIONS);
+
+    String maxParallelAppsForQueue = get(getQueuePrefix(queue)
+        + MAX_PARALLEL_APPLICATIONS);
+
+    return (maxParallelAppsForQueue != null) ?
+        Integer.parseInt(maxParallelAppsForQueue)
+        : defaultMaxParallelAppsForQueue;
+  }
+
+  public Integer getMaxParallelAppsForUser(String user) {
+    int defaultMaxParallelAppsForUser =
+        getInt(PREFIX + "user." + MAX_PARALLEL_APPLICATIONS,
+        DEFAULT_MAX_PARALLEL_APPLICATIONS);
+    String maxParallelAppsForUser = get(getUserPrefix(user)
+        + MAX_PARALLEL_APPLICATIONS);
+
+    return (maxParallelAppsForUser != null) ?
+        Integer.parseInt(maxParallelAppsForUser)
+        : defaultMaxParallelAppsForUser;
+  }
+
+  public boolean getAllowZeroCapacitySum(String queue) {
+    return getBoolean(getQueuePrefix(queue)
+        + ALLOW_ZERO_CAPACITY_SUM, DEFAULT_ALLOW_ZERO_CAPACITY_SUM);
+  }
+
+  public void setAllowZeroCapacitySum(String queue, boolean value) {
+    setBoolean(getQueuePrefix(queue)
+        + ALLOW_ZERO_CAPACITY_SUM, value);
+  }
   private static final String PREEMPTION_CONFIG_PREFIX =
       "yarn.resourcemanager.monitor.capacity.preemption.";
 
@@ -1546,20 +1811,23 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     }
 
     String policyType = get(getQueuePrefix(queue) + ORDERING_POLICY,
-        defaultPolicy);
+        defaultPolicy).trim();
 
     QueueOrderingPolicy qop;
-    if (policyType.trim().equals(QUEUE_UTILIZATION_ORDERING_POLICY)) {
+    if (policyType.equals(QUEUE_UTILIZATION_ORDERING_POLICY)) {
       // Doesn't respect priority
       qop = new PriorityUtilizationQueueOrderingPolicy(false);
-    } else if (policyType.trim().equals(
+    } else if (policyType.equals(
         QUEUE_PRIORITY_UTILIZATION_ORDERING_POLICY)) {
       qop = new PriorityUtilizationQueueOrderingPolicy(true);
     } else {
-      String message =
-          "Unable to construct queue ordering policy=" + policyType + " queue="
-              + queue;
-      throw new YarnRuntimeException(message);
+      try {
+        qop = (QueueOrderingPolicy) Class.forName(policyType).newInstance();
+      } catch (Exception e) {
+        String message = "Unable to construct queue ordering policy="
+            + policyType + " queue=" + queue;
+        throw new YarnRuntimeException(message, e);
+      }
     }
 
     return qop;
@@ -1741,6 +2009,17 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
       AUTO_CREATE_CHILD_QUEUE_PREFIX + "enabled";
 
   @Private
+  private static final String AUTO_QUEUE_CREATION_V2_PREFIX =
+      "auto-queue-creation-v2";
+
+  @Private
+  public static final String AUTO_QUEUE_CREATION_V2_ENABLED =
+      AUTO_QUEUE_CREATION_V2_PREFIX + ".enabled";
+
+  @Private
+  public static final boolean DEFAULT_AUTO_QUEUE_CREATION_ENABLED = false;
+
+  @Private
   public static final String AUTO_CREATED_LEAF_QUEUE_TEMPLATE_PREFIX =
       "leaf-queue-template";
 
@@ -1774,6 +2053,20 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     setBoolean(getQueuePrefix(queuePath) +
             AUTO_CREATE_CHILD_QUEUE_ENABLED,
         autoCreationEnabled);
+  }
+
+  public void setAutoQueueCreationV2Enabled(String queuePath,
+      boolean autoQueueCreation) {
+    setBoolean(
+        getQueuePrefix(queuePath) + AUTO_QUEUE_CREATION_V2_ENABLED,
+        autoQueueCreation);
+  }
+
+  public boolean isAutoQueueCreationV2Enabled(String queuePath) {
+    boolean isAutoQueueCreation = getBoolean(
+        getQueuePrefix(queuePath) + AUTO_QUEUE_CREATION_V2_ENABLED,
+        DEFAULT_AUTO_QUEUE_CREATION_ENABLED);
+    return isAutoQueueCreation;
   }
 
   /**
@@ -1925,9 +2218,27 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
   @Private
   public void setAutoCreatedLeafQueueTemplateCapacityByLabel(String queuePath,
       String label, float val) {
-    String leafQueueConfPrefix = getAutoCreatedQueueTemplateConfPrefix(
-        queuePath);
+    String leafQueueConfPrefix =
+        getAutoCreatedQueueTemplateConfPrefix(queuePath);
     setCapacityByLabel(leafQueueConfPrefix, label, val);
+  }
+
+  @VisibleForTesting
+  @Private
+  public void setAutoCreatedLeafQueueTemplateCapacityByLabel(String queuePath,
+      String label, Resource resource) {
+
+    String leafQueueConfPrefix =
+        getAutoCreatedQueueTemplateConfPrefix(queuePath);
+
+    StringBuilder resourceString = new StringBuilder();
+    resourceString
+        .append("[" + AbsoluteResourceType.MEMORY.toString().toLowerCase() + "="
+            + resource.getMemorySize() + ","
+            + AbsoluteResourceType.VCORES.toString().toLowerCase() + "="
+            + resource.getVirtualCores() + "]");
+
+    setCapacityByLabel(leafQueueConfPrefix, label, resourceString.toString());
   }
 
   @Private
@@ -1946,6 +2257,23 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     String leafQueueConfPrefix = getAutoCreatedQueueTemplateConfPrefix(
         queuePath);
     setMaximumCapacityByLabel(leafQueueConfPrefix, label, val);
+  }
+
+  @Private
+  @VisibleForTesting
+  public void setAutoCreatedLeafQueueTemplateMaxCapacity(String queuePath,
+      String label, Resource resource) {
+    String leafQueueConfPrefix = getAutoCreatedQueueTemplateConfPrefix(
+        queuePath);
+
+    StringBuilder resourceString = new StringBuilder();
+    resourceString
+        .append("[" + AbsoluteResourceType.MEMORY.toString().toLowerCase() + "="
+            + resource.getMemorySize() + ","
+            + AbsoluteResourceType.VCORES.toString().toLowerCase() + "="
+            + resource.getVirtualCores() + "]");
+
+    setMaximumCapacityByLabel(leafQueueConfPrefix, label, resourceString.toString());
   }
 
   @VisibleForTesting
@@ -2057,6 +2385,21 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
     set(prefix, resourceString.toString());
   }
 
+  public boolean checkConfigTypeIsAbsoluteResource(String label, String queue,
+      Set<String> resourceTypes) {
+    String propertyName = getNodeLabelPrefix(queue, label) + CAPACITY;
+    String resourceString = get(propertyName);
+    if (resourceString == null || resourceString.isEmpty()) {
+      return false;
+    }
+
+    Matcher matcher = RESOURCE_PATTERN.matcher(resourceString);
+    if (matcher.find()) {
+      return true;
+    }
+    return false;
+  }
+
   private Resource internalGetLabeledResourceRequirementForQueue(String queue,
       String label, Set<String> resourceTypes, String suffix) {
     String propertyName = getNodeLabelPrefix(queue, label) + suffix;
@@ -2080,7 +2423,6 @@ public class CapacitySchedulerConfiguration extends ReservationSchedulerConfigur
       if (subGroup.trim().isEmpty()) {
         return Resources.none();
       }
-
       subGroup = subGroup.substring(1, subGroup.length() - 1);
       for (String kvPair : subGroup.trim().split(",")) {
         String[] splits = kvPair.split("=");

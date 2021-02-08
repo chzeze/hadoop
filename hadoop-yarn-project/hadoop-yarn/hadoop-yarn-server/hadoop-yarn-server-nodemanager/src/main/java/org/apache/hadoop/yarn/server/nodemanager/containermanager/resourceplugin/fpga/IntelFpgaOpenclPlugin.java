@@ -17,13 +17,11 @@
  */
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.fpga;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.fpga.FpgaResourceAllocator;
-import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.fpga.FpgaResourceAllocator.FpgaDevice;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,8 +136,8 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
   }
 
   @Override
-  public List<FpgaResourceAllocator.FpgaDevice> discover(int timeout) {
-    List<FpgaResourceAllocator.FpgaDevice> list = new LinkedList<>();
+  public List<FpgaDevice> discover(int timeout) {
+    List<FpgaDevice> list = new LinkedList<>();
     String output;
     output = getDiagnoseInfo(timeout);
     if (null == output) {
@@ -153,7 +151,7 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
   }
 
   /**
-   *  Helper class to run aocl diagnose & determine major/minor numbers.
+   *  Helper class to run aocl diagnose &amp; determine major/minor numbers.
    */
   public static class InnerShellExecutor {
 
@@ -164,10 +162,10 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
       Shell.ShellCommandExecutor shexec = new Shell.ShellCommandExecutor(
           new String[]{"stat", "-c", "%t:%T", "/dev/" + devName});
       try {
-        LOG.debug("Get FPGA major-minor numbers from /dev/" + devName);
+        LOG.debug("Get FPGA major-minor numbers from /dev/{}", devName);
         shexec.execute();
         String[] strs = shexec.getOutput().trim().split(":");
-        LOG.debug("stat output:" + shexec.getOutput());
+        LOG.debug("stat output:{}", shexec.getOutput());
         output = Integer.parseInt(strs[0], 16) + ":" +
             Integer.parseInt(strs[1], 16);
       } catch (IOException e) {
@@ -192,7 +190,7 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
             "Failed to execute " + binary + " diagnose, exception message:" + e
                 .getMessage() +", output:" + output + ", continue ...";
         LOG.warn(msg);
-        LOG.debug(shexec.getOutput());
+        LOG.debug("{}", shexec.getOutput());
       }
       return shexec.getOutput();
     }
@@ -240,8 +238,10 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
           .findFirst();
 
       if (aocxPath.isPresent()) {
-        ipFilePath = aocxPath.get().toUri().toString();
-        LOG.debug("Found: " + ipFilePath);
+        ipFilePath = aocxPath.get().toString();
+        LOG.info("Found: {}", ipFilePath);
+      } else {
+        LOG.warn("Requested IP file not found");
       }
     } else {
       LOG.warn("Localized resource is null!");
@@ -251,8 +251,7 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
   }
 
   private boolean matchesIpid(Path p, String id) {
-    return p.getName().toLowerCase().equals(id.toLowerCase())
-        && p.getName().endsWith(".aocx");
+    return p.getName().toLowerCase().equals(id.toLowerCase() + ".aocx");
   }
 
   /**
@@ -278,7 +277,7 @@ public class IntelFpgaOpenclPlugin implements AbstractFpgaVendorPlugin {
     try {
       shexec.execute();
       if (0 == shexec.getExitCode()) {
-        LOG.debug(shexec.getOutput());
+        LOG.debug("{}", shexec.getOutput());
         LOG.info("Intel aocl program " + ipPath + " to " +
             aclName + " successfully");
       } else {

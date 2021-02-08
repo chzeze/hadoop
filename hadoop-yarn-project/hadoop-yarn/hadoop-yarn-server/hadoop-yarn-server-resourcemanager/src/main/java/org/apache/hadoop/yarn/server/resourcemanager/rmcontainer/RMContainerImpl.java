@@ -27,7 +27,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -467,10 +467,8 @@ public class RMContainerImpl implements RMContainer {
   
   @Override
   public void handle(RMContainerEvent event) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Processing " + event.getContainerId() + " of type " + event
-              .getType());
-    }
+    LOG.debug("Processing {} of type {}", event.getContainerId(),
+        event.getType());
 
     writeLock.lock();
     try {
@@ -610,7 +608,10 @@ public class RMContainerImpl implements RMContainer {
       container.eventHandler.handle(new RMAppRunningOnNodeEvent(container
           .getApplicationAttemptId().getApplicationId(), container.nodeId));
 
-      publishNonAMContainerEventstoATS(container);
+      // Opportunistic containers move directly from NEW to ACQUIRED
+      if (container.getState() == RMContainerState.NEW) {
+        publishNonAMContainerEventstoATS(container);
+      }
     }
   }
 

@@ -24,7 +24,7 @@ import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -40,7 +40,7 @@ import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationAttemptIdPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.NodeIdPBImpl;
 import org.apache.hadoop.yarn.proto.YarnSecurityTokenProtos.NMTokenIdentifierProto;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Public
 @Evolving
@@ -98,7 +98,7 @@ public class NMTokenIdentifier extends TokenIdentifier {
   
   @Override
   public void write(DataOutput out) throws IOException {
-    LOG.debug("Writing NMTokenIdentifier to RPC layer: " + this);
+    LOG.debug("Writing NMTokenIdentifier to RPC layer: {}", this);
     out.write(proto.toByteArray());
   }
 

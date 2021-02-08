@@ -38,7 +38,7 @@ import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -271,9 +271,9 @@ public class TrashPolicyDefault extends TrashPolicy {
     public void run() {
       if (emptierInterval == 0)
         return;                                   // trash disabled
-      long now = Time.now();
-      long end;
+      long now, end;
       while (true) {
+        now = Time.now();
         end = ceiling(now, emptierInterval);
         try {                                     // sleep for interval
           Thread.sleep(end - now);

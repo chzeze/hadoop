@@ -25,8 +25,13 @@ import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+import org.apache.hadoop.yarn.logaggregation.ContainerLogFileInfo;
+import org.apache.hadoop.yarn.logaggregation.ExtendedLogMetaRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.commons.math3.util.Pair;
@@ -41,7 +46,6 @@ import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.hdfs.protocol.DSQuotaExceededException;
 import org.apache.hadoop.yarn.api.records.ApplicationAccessType;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
-import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogKey;
 import org.apache.hadoop.yarn.logaggregation.AggregatedLogFormat.LogReader;
@@ -77,12 +81,7 @@ public class LogAggregationTFileController
 
   @Override
   public void initInternal(Configuration conf) {
-    this.remoteRootLogDir = new Path(
-        conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR,
-            YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR));
-    this.remoteRootLogDirSuffix =
-        conf.get(YarnConfiguration.NM_REMOTE_APP_LOG_DIR_SUFFIX,
-            YarnConfiguration.DEFAULT_NM_REMOTE_APP_LOG_DIR_SUFFIX);
+    // do nothing
   }
 
   @Override
@@ -179,7 +178,8 @@ public class LogAggregationTFileController
         || containerIdStr.isEmpty());
     long size = logRequest.getBytes();
     RemoteIterator<FileStatus> nodeFiles = LogAggregationUtils
-        .getRemoteNodeFileDir(conf, appId, logRequest.getAppOwner());
+        .getRemoteNodeFileDir(conf, appId, logRequest.getAppOwner(),
+        remoteRootLogDir, remoteRootLogDirSuffix);
     byte[] buf = new byte[65535];
     while (nodeFiles != null && nodeFiles.hasNext()) {
       final FileStatus thisNodeFile = nodeFiles.next();
@@ -262,6 +262,58 @@ public class LogAggregationTFileController
   }
 
   @Override
+  public Map<String, List<ContainerLogFileInfo>> getLogMetaFilesOfNode(
+      ExtendedLogMetaRequest logRequest, FileStatus currentNodeFile,
+      ApplicationId appId) throws IOException {
+    Map<String, List<ContainerLogFileInfo>> logMetaFiles = new HashMap<>();
+    Path nodePath = currentNodeFile.getPath();
+
+    LogReader reader =
+        new LogReader(conf,
+            nodePath);
+    try {
+      DataInputStream valueStream;
+      LogKey key = new LogKey();
+      valueStream = reader.next(key);
+      while (valueStream != null) {
+        if (logRequest.getContainerId() == null ||
+            logRequest.getContainerId().equals(key.toString())) {
+          logMetaFiles.put(key.toString(), new ArrayList<>());
+          fillMetaFiles(currentNodeFile, valueStream,
+              logMetaFiles.get(key.toString()));
+        }
+        // Next container
+        key = new LogKey();
+        valueStream = reader.next(key);
+      }
+    } finally {
+      reader.close();
+    }
+    return logMetaFiles;
+  }
+
+  private void fillMetaFiles(
+      FileStatus currentNodeFile, DataInputStream valueStream,
+      List<ContainerLogFileInfo> logMetaFiles)
+      throws IOException {
+    while (true) {
+      try {
+        Pair<String, String> logMeta =
+            LogReader.readContainerMetaDataAndSkipData(
+                valueStream);
+        ContainerLogFileInfo logMetaFile = new ContainerLogFileInfo();
+        logMetaFile.setLastModifiedTime(
+            Long.toString(currentNodeFile.getModificationTime()));
+        logMetaFile.setFileName(logMeta.getFirst());
+        logMetaFile.setFileSize(logMeta.getSecond());
+        logMetaFiles.add(logMetaFile);
+      } catch (EOFException eof) {
+        break;
+      }
+    }
+  }
+
+  @Override
   public List<ContainerLogMeta> readAggregatedLogsMeta(
       ContainerLogsRequest logRequest) throws IOException {
     List<ContainerLogMeta> containersLogMeta = new ArrayList<>();
@@ -269,11 +321,15 @@ public class LogAggregationTFileController
     String nodeId = logRequest.getNodeId();
     ApplicationId appId = logRequest.getAppId();
     String appOwner = logRequest.getAppOwner();
-    boolean getAllContainers = (containerIdStr == null);
+    ApplicationAttemptId appAttemptId = logRequest.getAppAttemptId();
+    boolean getAllContainers = (containerIdStr == null &&
+        appAttemptId == null);
+    boolean getOnlyOneContainer = containerIdStr != null;
     String nodeIdStr = (nodeId == null) ? null
         : LogAggregationUtils.getNodeString(nodeId);
     RemoteIterator<FileStatus> nodeFiles = LogAggregationUtils
-        .getRemoteNodeFileDir(conf, appId, appOwner);
+        .getRemoteNodeFileDir(conf, appId, appOwner,
+        remoteRootLogDir, remoteRootLogDirSuffix);
     if (nodeFiles == null) {
       throw new IOException("There is no available log file for "
           + "application:" + appId);
@@ -301,7 +357,8 @@ public class LogAggregationTFileController
           LogKey key = new LogKey();
           valueStream = reader.next(key);
           while (valueStream != null) {
-            if (getAllContainers || (key.toString().equals(containerIdStr))) {
+            if (getAllContainers || (key.toString().equals(containerIdStr)) ||
+                belongsToAppAttempt(appAttemptId, key.toString())) {
               ContainerLogMeta containerLogMeta = new ContainerLogMeta(
                   key.toString(), thisNodeFile.getPath().getName());
               while (true) {
@@ -318,7 +375,7 @@ public class LogAggregationTFileController
                 }
               }
               containersLogMeta.add(containerLogMeta);
-              if (!getAllContainers) {
+              if (getOnlyOneContainer) {
                 break;
               }
             }
@@ -337,7 +394,7 @@ public class LogAggregationTFileController
   @Override
   public void renderAggregatedLogsBlock(Block html, ViewContext context) {
     TFileAggregatedLogsBlock block = new TFileAggregatedLogsBlock(
-        context, conf);
+        context, conf, remoteRootLogDir, remoteRootLogDirSuffix);
     block.render(html);
   }
 

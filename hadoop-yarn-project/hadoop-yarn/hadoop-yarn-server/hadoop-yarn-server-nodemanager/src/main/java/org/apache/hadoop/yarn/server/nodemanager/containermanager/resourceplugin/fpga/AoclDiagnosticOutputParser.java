@@ -23,7 +23,6 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.hadoop.yarn.server.nodemanager.containermanager.linux.resources.fpga.FpgaResourceAllocator.FpgaDevice;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.fpga.IntelFpgaOpenclPlugin.InnerShellExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -149,8 +148,8 @@ final class AoclDiagnosticOutputParser {
 
           devices.add(new FpgaDevice(fpgaType,
               Integer.parseInt(mmn[0]),
-              Integer.parseInt(mmn[1]), null,
-              fields[0], aliasName, fields[1], fields[2], fields[3]));
+              Integer.parseInt(mmn[1]),
+              aliasName));
         } else {
           LOG.warn("Failed to retrieve major/minor number for device");
         }

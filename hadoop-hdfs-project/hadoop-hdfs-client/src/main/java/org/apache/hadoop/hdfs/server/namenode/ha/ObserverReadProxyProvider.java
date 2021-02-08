@@ -19,10 +19,12 @@ package org.apache.hadoop.hdfs.server.namenode.ha;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.net.URI;
+import java.util.concurrent.TimeUnit;
 import java.util.List;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -43,10 +45,12 @@ import org.apache.hadoop.ipc.ObserverRetryOnActiveException;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.RpcInvocationHandler;
+import org.apache.hadoop.ipc.StandbyException;
+import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * A {@link org.apache.hadoop.io.retry.FailoverProxyProvider} implementation
@@ -63,13 +67,26 @@ import com.google.common.annotations.VisibleForTesting;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Evolving
-public class ObserverReadProxyProvider<T extends ClientProtocol>
+public class ObserverReadProxyProvider<T>
     extends AbstractNNFailoverProxyProvider<T> {
-  private static final Logger LOG = LoggerFactory.getLogger(
+  @VisibleForTesting
+  static final Logger LOG = LoggerFactory.getLogger(
       ObserverReadProxyProvider.class);
+
+  /** Configuration key for {@link #autoMsyncPeriodMs}. */
+  static final String AUTO_MSYNC_PERIOD_KEY_PREFIX =
+      HdfsClientConfigKeys.Failover.PREFIX + "observer.auto-msync-period";
+  /** Auto-msync disabled by default. */
+  static final long AUTO_MSYNC_PERIOD_DEFAULT = -1;
 
   /** Client-side context for syncing with the NameNode server side. */
   private final AlignmentContext alignmentContext;
+
+  /** Configuration key for {@link #observerProbeRetryPeriodMs}. */
+  static final String OBSERVER_PROBE_RETRY_PERIOD_KEY =
+      "dfs.client.failover.observer.probe.retry.period";
+  /** Observer probe retry period default to 10 min. */
+  static final long OBSERVER_PROBE_RETRY_PERIOD_DEFAULT = 60 * 10 * 1000;
 
   /** The inner proxy provider used for active/standby failover. */
   private final AbstractNNFailoverProxyProvider<T> failoverProxy;
@@ -86,6 +103,24 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
    * requests will still go to active NN.
    */
   private boolean observerReadEnabled;
+
+  /**
+   * This adjusts how frequently this proxy provider should auto-msync to the
+   * Active NameNode, automatically performing an msync() call to the active
+   * to fetch the current transaction ID before submitting read requests to
+   * observer nodes. See HDFS-14211 for more description of this feature.
+   * If this is below 0, never auto-msync. If this is 0, perform an msync on
+   * every read operation. If this is above 0, perform an msync after this many
+   * ms have elapsed since the last msync.
+   */
+  private final long autoMsyncPeriodMs;
+
+  /**
+   * The time, in millisecond epoch, that the last msync operation was
+   * performed. This includes any implicit msync (any operation which is
+   * serviced by the Active NameNode).
+   */
+  private volatile long lastMsyncTimeMs = -1;
 
   /**
    * A client using an ObserverReadProxyProvider should first sync with the
@@ -112,6 +147,21 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
   private volatile ProxyInfo<T> lastProxy = null;
 
   /**
+   * In case there is no Observer node, for every read call, client will try
+   * to loop through all Standby nodes and fail eventually. Since there is no
+   * guarantee on when Observer node will be enabled. This can be very
+   * inefficient.
+   * The following value specify the period on how often to retry all Standby.
+   */
+  private long observerProbeRetryPeriodMs;
+
+  /**
+   * The previous time where zero observer were found. If there was observer,
+   * or it is initialization, this is set to 0.
+   */
+  private long lastObserverProbeTime;
+
+  /**
    * By default ObserverReadProxyProvider uses
    * {@link ConfiguredFailoverProxyProvider} for failover.
    */
@@ -129,6 +179,7 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
     this.failoverProxy = failoverProxy;
     this.alignmentContext = new ClientGSIContext();
     factory.setAlignmentContext(alignmentContext);
+    this.lastObserverProbeTime = 0;
 
     // Don't bother configuring the number of retries and such on the retry
     // policy since it is mainly only used for determining whether or not an
@@ -154,8 +205,23 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
         ObserverReadInvocationHandler.class.getClassLoader(),
         new Class<?>[] {xface}, new ObserverReadInvocationHandler());
     combinedProxy = new ProxyInfo<>(wrappedProxy, combinedInfo.toString());
+
+    autoMsyncPeriodMs = conf.getTimeDuration(
+        // The host of the URI is the nameservice ID
+        AUTO_MSYNC_PERIOD_KEY_PREFIX + "." + uri.getHost(),
+        AUTO_MSYNC_PERIOD_DEFAULT, TimeUnit.MILLISECONDS);
+    observerProbeRetryPeriodMs = conf.getTimeDuration(
+        OBSERVER_PROBE_RETRY_PERIOD_KEY,
+        OBSERVER_PROBE_RETRY_PERIOD_DEFAULT, TimeUnit.MILLISECONDS);
+
     // TODO : make this configurable or remove this variable
-    this.observerReadEnabled = true;
+    if (wrappedProxy instanceof ClientProtocol) {
+      this.observerReadEnabled = true;
+    } else {
+      LOG.info("Disabling observer reads for {} because the requested proxy "
+          + "class does not implement {}", uri, ClientProtocol.class.getName());
+      this.observerReadEnabled = false;
+    }
   }
 
   public AlignmentContext getAlignmentContext() {
@@ -219,18 +285,50 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
     }
     currentIndex = (currentIndex + 1) % nameNodeProxies.size();
     currentProxy = createProxyIfNeeded(nameNodeProxies.get(currentIndex));
-    try {
-      HAServiceState state = currentProxy.proxy.getHAServiceState();
-      currentProxy.setCachedState(state);
-    } catch (IOException e) {
-      LOG.info("Failed to connect to {}. Setting cached state to Standby",
-          currentProxy.getAddress(), e);
-      currentProxy.setCachedState(HAServiceState.STANDBY);
-    }
+    currentProxy.setCachedState(getHAServiceState(currentProxy));
     LOG.debug("Changed current proxy from {} to {}",
         initial == null ? "none" : initial.proxyInfo,
         currentProxy.proxyInfo);
     return currentProxy;
+  }
+
+  /**
+   * Fetch the service state from a proxy. If it is unable to be fetched,
+   * assume it is in standby state, but log the exception.
+   */
+  private HAServiceState getHAServiceState(NNProxyInfo<T> proxyInfo) {
+    IOException ioe;
+    try {
+      return getProxyAsClientProtocol(proxyInfo.proxy).getHAServiceState();
+    } catch (RemoteException re) {
+      // Though a Standby will allow a getHAServiceState call, it won't allow
+      // delegation token lookup, so if DT is used it throws StandbyException
+      if (re.unwrapRemoteException() instanceof StandbyException) {
+        LOG.debug("NameNode {} threw StandbyException when fetching HAState",
+            proxyInfo.getAddress());
+        return HAServiceState.STANDBY;
+      }
+      ioe = re;
+    } catch (IOException e) {
+      ioe = e;
+    }
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Failed to connect to {} while fetching HAServiceState",
+          proxyInfo.getAddress(), ioe);
+    }
+    return null;
+  }
+
+  /**
+   * Return the input proxy, cast as a {@link ClientProtocol}. This catches any
+   * {@link ClassCastException} and wraps it in a more helpful message. This
+   * should ONLY be called if the caller is certain that the proxy is, in fact,
+   * a {@link ClientProtocol}.
+   */
+  private ClientProtocol getProxyAsClientProtocol(T proxy) {
+    assert proxy instanceof ClientProtocol : "BUG: Attempted to use proxy "
+        + "of class " + proxy.getClass() + " as if it was a ClientProtocol.";
+    return (ClientProtocol) proxy;
   }
 
   /**
@@ -245,8 +343,58 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
     if (msynced) {
       return; // No need for an msync
     }
-    failoverProxy.getProxy().proxy.msync();
+    getProxyAsClientProtocol(failoverProxy.getProxy().proxy).msync();
     msynced = true;
+    lastMsyncTimeMs = Time.monotonicNow();
+  }
+
+  /**
+   * Check if client need to find an Observer proxy.
+   * If current proxy is Active then we should stick to it and postpone probing
+   * for Observers for a period of time. When this time expires the client will
+   * try to find an Observer again.
+   * *
+   * @return true if we did not reach the threshold
+   * to start looking for Observer, or false otherwise.
+   */
+  private boolean shouldFindObserver() {
+    // lastObserverProbeTime > 0 means we tried, but did not find any
+    // Observers yet
+    // If lastObserverProbeTime <= 0, previous check found observer, so
+    // we should not skip observer read.
+    if (lastObserverProbeTime > 0) {
+      return Time.monotonicNow() - lastObserverProbeTime
+          >= observerProbeRetryPeriodMs;
+    }
+    return true;
+  }
+
+  /**
+   * This will call {@link ClientProtocol#msync()} on the active NameNode
+   * (via the {@link #failoverProxy}) to update the state of this client, only
+   * if at least {@link #autoMsyncPeriodMs} ms has elapsed since the last time
+   * an msync was performed.
+   *
+   * @see #autoMsyncPeriodMs
+   */
+  private void autoMsyncIfNecessary() throws IOException {
+    if (autoMsyncPeriodMs == 0) {
+      // Always msync
+      getProxyAsClientProtocol(failoverProxy.getProxy().proxy).msync();
+    } else if (autoMsyncPeriodMs > 0) {
+      if (Time.monotonicNow() - lastMsyncTimeMs > autoMsyncPeriodMs) {
+        synchronized (this) {
+          // Use a synchronized block so that only one thread will msync
+          // if many operations are submitted around the same time.
+          // Re-check the entry criterion since the status may have changed
+          // while waiting for the lock.
+          if (Time.monotonicNow() - lastMsyncTimeMs > autoMsyncPeriodMs) {
+            getProxyAsClientProtocol(failoverProxy.getProxy().proxy).msync();
+            lastMsyncTimeMs = Time.monotonicNow();
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -268,16 +416,19 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
       lastProxy = null;
       Object retVal;
 
-      if (observerReadEnabled && isRead(method)) {
+      if (observerReadEnabled && shouldFindObserver() && isRead(method)) {
         if (!msynced) {
           // An msync() must first be performed to ensure that this client is
           // up-to-date with the active's state. This will only be done once.
           initializeMsync();
+        } else {
+          autoMsyncIfNecessary();
         }
 
         int failedObserverCount = 0;
         int activeCount = 0;
         int standbyCount = 0;
+        int unreachableCount = 0;
         for (int i = 0; i < nameNodeProxies.size(); i++) {
           NNProxyInfo<T> current = getCurrentProxy();
           HAServiceState currState = current.getCachedState();
@@ -286,9 +437,12 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
               activeCount++;
             } else if (currState == HAServiceState.STANDBY) {
               standbyCount++;
+            } else if (currState == null) {
+              unreachableCount++;
             }
             LOG.debug("Skipping proxy {} for {} because it is in state {}",
-                current.proxyInfo, method.getName(), currState);
+                current.proxyInfo, method.getName(),
+                currState == null ? "unreachable" : currState);
             changeProxy(current);
             continue;
           }
@@ -305,12 +459,19 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
               throw ite.getCause();
             }
             Exception e = (Exception) ite.getCause();
+            if (e instanceof InterruptedIOException ||
+                e instanceof InterruptedException) {
+              // If interrupted, do not retry.
+              LOG.warn("Invocation returned interrupted exception on [{}];",
+                  current.proxyInfo, e);
+              throw e;
+            }
             if (e instanceof RemoteException) {
               RemoteException re = (RemoteException) e;
               Exception unwrapped = re.unwrapRemoteException(
                   ObserverRetryOnActiveException.class);
               if (unwrapped instanceof ObserverRetryOnActiveException) {
-                LOG.info("Encountered ObserverRetryOnActiveException from {}." +
+                LOG.debug("Encountered ObserverRetryOnActiveException from {}." +
                     " Retry active namenode directly.", current.proxyInfo);
                 break;
               }
@@ -330,14 +491,28 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
           }
         }
 
-        // If we get here, it means all observers have failed.
-        LOG.warn("{} observers have failed for read request {}; also found " +
-            "{} standby and {} active. Falling back to active.",
-            failedObserverCount, method.getName(), standbyCount, activeCount);
+        // Only log message if there are actual observer failures.
+        // Getting here with failedObserverCount = 0 could
+        // be that there is simply no Observer node running at all.
+        if (failedObserverCount > 0) {
+          // If we get here, it means all observers have failed.
+          LOG.warn("{} observers have failed for read request {}; "
+                  + "also found {} standby, {} active, and {} unreachable. "
+                  + "Falling back to active.", failedObserverCount,
+              method.getName(), standbyCount, activeCount, unreachableCount);
+          lastObserverProbeTime = 0;
+        } else {
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Read falling back to active without observer read "
+                + "fail, is there no observer node running?");
+          }
+          lastObserverProbeTime = Time.monotonicNow();
+        }
       }
 
-      // Either all observers have failed, or that it is a write request.
-      // In either case, we'll forward the request to active NameNode.
+      // Either all observers have failed, observer reads are disabled,
+      // or this is a write request. In any case, forward the request to
+      // the active NameNode.
       LOG.debug("Using failoverProxy to service {}", method.getName());
       ProxyInfo<T> activeProxy = failoverProxy.getProxy();
       try {
@@ -349,6 +524,7 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
       // If this was reached, the request reached the active, so the
       // state is up-to-date with active and no further msync is needed.
       msynced = true;
+      lastMsyncTimeMs = Time.monotonicNow();
       lastProxy = activeProxy;
       return retVal;
     }
@@ -358,7 +534,8 @@ public class ObserverReadProxyProvider<T extends ClientProtocol>
 
     @Override
     public ConnectionId getConnectionId() {
-      return RPC.getConnectionIdForProxy(getCurrentProxy().proxy);
+      return RPC.getConnectionIdForProxy(observerReadEnabled
+          ? getCurrentProxy().proxy : failoverProxy.getProxy().proxy);
     }
   }
 

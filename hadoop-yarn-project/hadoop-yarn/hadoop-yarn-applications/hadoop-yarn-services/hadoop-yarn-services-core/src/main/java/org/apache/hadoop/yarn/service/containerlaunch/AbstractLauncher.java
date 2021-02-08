@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.service.containerlaunch;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.api.records.ContainerRetryContext;
@@ -196,7 +196,7 @@ public class AbstractLauncher {
 
         String key = entry.getKey();
         LocalResource val = entry.getValue();
-        log.debug(key + "=" + ServiceUtils.stringify(val.getResource()));
+        log.debug("{} = {}", key, ServiceUtils.stringify(val.getResource()));
       }
     }
   }

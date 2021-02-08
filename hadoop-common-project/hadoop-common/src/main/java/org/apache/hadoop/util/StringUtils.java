@@ -42,8 +42,8 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.net.NetUtils;
 
-import com.google.common.base.Preconditions;
-import com.google.common.net.InetAddresses;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
 
 /**
  * General string utils
@@ -420,6 +420,32 @@ public class StringUtils {
     StringTokenizer tokenizer = new StringTokenizer(str, delim);
     while (tokenizer.hasMoreTokens()) {
       values.add(tokenizer.nextToken());
+    }
+    return values;
+  }
+
+  /**
+   * Returns a collection of strings, trimming leading and trailing whitespace
+   * on each value. Duplicates are not removed.
+   *
+   * @param str
+   *          String separated by delim.
+   * @param delim
+   *          Delimiter to separate the values in str.
+   * @return Collection of string values.
+   */
+  public static Collection<String> getTrimmedStringCollection(String str,
+      String delim) {
+    List<String> values = new ArrayList<String>();
+    if (str == null)
+      return values;
+    StringTokenizer tokenizer = new StringTokenizer(str, delim);
+    while (tokenizer.hasMoreTokens()) {
+      String next = tokenizer.nextToken();
+      if (next == null || next.trim().isEmpty()) {
+        continue;
+      }
+      values.add(next.trim());
     }
     return values;
   }

@@ -31,6 +31,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
@@ -68,7 +69,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.Ap
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.ApplicationStateDataPBImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.impl.pb.EpochPBImpl;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 @Private
 @Unstable
@@ -380,10 +381,8 @@ public class FileSystemRMStateStore extends RMStateStore {
           DelegationKey key = new DelegationKey();
           key.readFields(fsIn);
           rmState.rmSecretManagerState.masterKeyState.add(key);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Loaded delegation key: keyId=" + key.getKeyId()
-                + ", expirationDate=" + key.getExpiryDate());
-          }
+          LOG.debug("Loaded delegation key: keyId={}, expirationDate={}",
+              key.getKeyId(), key.getExpiryDate());
         } else if (childNodeName.startsWith(DELEGATION_TOKEN_PREFIX)) {
           RMDelegationTokenIdentifierData identifierData =
               RMStateStoreUtils.readRMDelegationTokenIdentifierData(fsIn);
@@ -392,10 +391,8 @@ public class FileSystemRMStateStore extends RMStateStore {
           long renewDate = identifierData.getRenewDate();
           rmState.rmSecretManagerState.delegationTokenState.put(identifier,
             renewDate);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Loaded RMDelegationTokenIdentifier: " + identifier
-                + " renewDate=" + renewDate);
-          }
+          LOG.debug("Loaded RMDelegationTokenIdentifier: {} renewDate={}",
+              identifier, renewDate);
         } else {
           LOG.warn("Unknown file for recovering RMDelegationTokenSecretManager");
         }
@@ -988,13 +985,10 @@ public class FileSystemRMStateStore extends RMStateStore {
 
     @Override
     public void processChildNode(String appDirName, String childNodeName,
-        byte[] childData)
-        throws com.google.protobuf.InvalidProtocolBufferException {
+        byte[] childData) throws InvalidProtocolBufferException {
       if (childNodeName.startsWith(ApplicationId.appIdStrPrefix)) {
         // application
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Loading application from node: " + childNodeName);
-        }
+        LOG.debug("Loading application from node: {}", childNodeName);
         ApplicationStateDataPBImpl appState =
             new ApplicationStateDataPBImpl(
                 ApplicationStateDataProto.parseFrom(childData));
@@ -1004,10 +998,7 @@ public class FileSystemRMStateStore extends RMStateStore {
       } else if (childNodeName.startsWith(
           ApplicationAttemptId.appAttemptIdStrPrefix)) {
         // attempt
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("Loading application attempt from node: "
-              + childNodeName);
-        }
+        LOG.debug("Loading application attempt from node: {}", childNodeName);
         ApplicationAttemptStateDataPBImpl attemptState =
             new ApplicationAttemptStateDataPBImpl(
                 ApplicationAttemptStateDataProto.parseFrom(childData));

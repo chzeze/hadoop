@@ -19,13 +19,21 @@ package org.apache.hadoop.security;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.GeneralSecurityException;
+import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Hashtable;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.HashSet;
 import java.util.Collection;
@@ -43,9 +51,15 @@ import javax.naming.directory.SearchResult;
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
 import javax.naming.spi.InitialContextFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
 
-import com.google.common.collect.Iterators;
-import com.sun.jndi.ldap.LdapCtxFactory;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterators;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
@@ -269,8 +283,16 @@ public class LdapGroupsMapping
 
   public static final String LDAP_CTX_FACTORY_CLASS_KEY =
       LDAP_CONFIG_PREFIX + ".ctx.factory.class";
-  public static final Class<? extends LdapCtxFactory>
-      LDAP_CTX_FACTORY_CLASS_DEFAULT = LdapCtxFactory.class;
+
+  public static final String LDAP_CTX_FACTORY_CLASS_DEFAULT =
+      "com.sun.jndi.ldap.LdapCtxFactory";
+
+  /**
+   * The env key used for specifying a custom socket factory to be used for
+   * creating connections to the LDAP server. This is not a Hadoop conf key.
+   */
+  private static final String LDAP_SOCKET_FACTORY_ENV_KEY =
+      "java.naming.ldap.factory.socket";
 
   private static final Logger LOG =
       LoggerFactory.getLogger(LdapGroupsMapping.class);
@@ -281,12 +303,12 @@ public class LdapGroupsMapping
   }
 
   private DirContext ctx;
-  private Configuration conf;
+  private volatile Configuration conf;
 
-  private Iterator<String> ldapUrls;
+  private volatile Iterator<String> ldapUrls;
   private String currentLdapUrl;
 
-  private boolean useSsl;
+  private volatile boolean useSsl;
   private String keystore;
   private String keystorePass;
   private String truststore;
@@ -299,21 +321,21 @@ public class LdapGroupsMapping
   private Iterator<BindUserInfo> bindUsers;
   private BindUserInfo currentBindUser;
 
-  private String userbaseDN;
+  private volatile String userbaseDN;
   private String groupbaseDN;
   private String groupSearchFilter;
-  private String userSearchFilter;
-  private String memberOfAttr;
+  private volatile String userSearchFilter;
+  private volatile String memberOfAttr;
   private String groupMemberAttr;
-  private String groupNameAttr;
-  private int groupHierarchyLevels;
-  private String posixUidAttr;
-  private String posixGidAttr;
+  private volatile String groupNameAttr;
+  private volatile int groupHierarchyLevels;
+  private volatile String posixUidAttr;
+  private volatile String posixGidAttr;
   private boolean isPosix;
-  private boolean useOneQuery;
+  private volatile boolean useOneQuery;
   private int numAttempts;
-  private int numAttemptsBeforeFailover;
-  private Class<? extends InitialContextFactory> ldapCxtFactoryClass;
+  private volatile int numAttemptsBeforeFailover;
+  private volatile String ldapCtxFactoryClassName;
 
   /**
    * Returns list of groups for a user.
@@ -327,38 +349,7 @@ public class LdapGroupsMapping
    */
   @Override
   public synchronized List<String> getGroups(String user) {
-    /*
-     * Normal garbage collection takes care of removing Context instances when
-     * they are no longer in use. Connections used by Context instances being
-     * garbage collected will be closed automatically. So in case connection is
-     * closed and gets CommunicationException, retry some times with new new
-     * DirContext/connection.
-     */
-
-    // Tracks the number of attempts made using the same LDAP server
-    int atemptsBeforeFailover = 1;
-
-    for (int attempt = 1; attempt <= numAttempts; attempt++,
-        atemptsBeforeFailover++) {
-      try {
-        return doGetGroups(user, groupHierarchyLevels);
-      } catch (AuthenticationException e) {
-        switchBindUser(e);
-      } catch (NamingException e) {
-        LOG.warn("Failed to get groups for user {} (attempt={}/{}) using {}. " +
-            "Exception: ", user, attempt, numAttempts, currentLdapUrl, e);
-        LOG.trace("TRACE", e);
-
-        if (failover(atemptsBeforeFailover, numAttemptsBeforeFailover)) {
-          atemptsBeforeFailover = 0;
-        }
-      }
-
-      // Reset ctx so that new DirContext can be created with new connection
-      this.ctx = null;
-    }
-    
-    return Collections.emptyList();
+    return new ArrayList<>(getGroupsSet(user));
   }
 
   /**
@@ -437,10 +428,10 @@ public class LdapGroupsMapping
    * @return a list of strings representing group names of the user.
    * @throws NamingException if unable to find group names
    */
-  private List<String> lookupGroup(SearchResult result, DirContext c,
+  private Set<String> lookupGroup(SearchResult result, DirContext c,
       int goUpHierarchy)
       throws NamingException {
-    List<String> groups = new ArrayList<>();
+    Set<String> groups = new LinkedHashSet<>();
     Set<String> groupDNs = new HashSet<>();
 
     NamingEnumeration<SearchResult> groupResults;
@@ -463,11 +454,7 @@ public class LdapGroupsMapping
         getGroupNames(groupResult, groups, groupDNs, goUpHierarchy > 0);
       }
       if (goUpHierarchy > 0 && !isPosix) {
-        // convert groups to a set to ensure uniqueness
-        Set<String> groupset = new HashSet<>(groups);
-        goUpGroupHierarchy(groupDNs, goUpHierarchy, groupset);
-        // convert set back to list for compatibility
-        groups = new ArrayList<>(groupset);
+        goUpGroupHierarchy(groupDNs, goUpHierarchy, groups);
       }
     }
     return groups;
@@ -486,7 +473,7 @@ public class LdapGroupsMapping
    * return an empty string array.
    * @throws NamingException if unable to get group names
    */
-  List<String> doGetGroups(String user, int goUpHierarchy)
+  Set<String> doGetGroups(String user, int goUpHierarchy)
       throws NamingException {
     DirContext c = getDirContext();
 
@@ -497,11 +484,11 @@ public class LdapGroupsMapping
     if (!results.hasMoreElements()) {
       LOG.debug("doGetGroups({}) returned no groups because the " +
           "user is not found.", user);
-      return new ArrayList<>();
+      return Collections.emptySet();
     }
     SearchResult result = results.nextElement();
 
-    List<String> groups = null;
+    Set<String> groups = Collections.emptySet();
     if (useOneQuery) {
       try {
         /**
@@ -515,7 +502,7 @@ public class LdapGroupsMapping
               memberOfAttr + "' attribute." +
               "Returned user object: " + result.toString());
         }
-        groups = new ArrayList<>();
+        groups = new LinkedHashSet<>();
         NamingEnumeration groupEnumeration = groupDNAttr.getAll();
         while (groupEnumeration.hasMore()) {
           String groupDN = groupEnumeration.next().toString();
@@ -527,7 +514,7 @@ public class LdapGroupsMapping
                 "the second LDAP query using the user's DN.", e);
       }
     }
-    if (groups == null || groups.isEmpty() || goUpHierarchy > 0) {
+    if (groups.isEmpty() || goUpHierarchy > 0) {
       groups = lookupGroup(result, c, goUpHierarchy);
     }
     LOG.debug("doGetGroups({}) returned {}", user, groups);
@@ -632,26 +619,20 @@ public class LdapGroupsMapping
     if (ctx == null) {
       // Set up the initial environment for LDAP connectivity
       Hashtable<String, String> env = new Hashtable<>();
-      env.put(Context.INITIAL_CONTEXT_FACTORY, ldapCxtFactoryClass.getName());
+      env.put(Context.INITIAL_CONTEXT_FACTORY, ldapCtxFactoryClassName);
       env.put(Context.PROVIDER_URL, currentLdapUrl);
       env.put(Context.SECURITY_AUTHENTICATION, "simple");
 
       // Set up SSL security, if necessary
       if (useSsl) {
         env.put(Context.SECURITY_PROTOCOL, "ssl");
-        if (!keystore.isEmpty()) {
-          System.setProperty("javax.net.ssl.keyStore", keystore);
-        }
-        if (!keystorePass.isEmpty()) {
-          System.setProperty("javax.net.ssl.keyStorePassword", keystorePass);
-        }
-        if (!truststore.isEmpty()) {
-          System.setProperty("javax.net.ssl.trustStore", truststore);
-        }
-        if (!truststorePass.isEmpty()) {
-          System.setProperty("javax.net.ssl.trustStorePassword",
-              truststorePass);
-        }
+        // It is necessary to use a custom socket factory rather than setting
+        // system properties to configure these options to avoid interfering
+        // with other SSL factories throughout the system
+        LdapSslSocketFactory.setConfigurations(keystore, keystorePass,
+            truststore, truststorePass);
+        env.put("java.naming.ldap.factory.socket",
+            LdapSslSocketFactory.class.getName());
       }
 
       env.put(Context.SECURITY_PRINCIPAL, currentBindUser.username);
@@ -683,6 +664,42 @@ public class LdapGroupsMapping
   @Override
   public void cacheGroupsAdd(List<String> groups) {
     // does nothing in this provider of user to groups mapping
+  }
+
+  @Override
+  public Set<String> getGroupsSet(String user) {
+    /*
+     * Normal garbage collection takes care of removing Context instances when
+     * they are no longer in use. Connections used by Context instances being
+     * garbage collected will be closed automatically. So in case connection is
+     * closed and gets CommunicationException, retry some times with new new
+     * DirContext/connection.
+     */
+
+    // Tracks the number of attempts made using the same LDAP server
+    int atemptsBeforeFailover = 1;
+
+    for (int attempt = 1; attempt <= numAttempts; attempt++,
+        atemptsBeforeFailover++) {
+      try {
+        return doGetGroups(user, groupHierarchyLevels);
+      } catch (AuthenticationException e) {
+        switchBindUser(e);
+      } catch (NamingException e) {
+        LOG.warn("Failed to get groups for user {} (attempt={}/{}) using {}. " +
+            "Exception: ", user, attempt, numAttempts, currentLdapUrl, e);
+        LOG.trace("TRACE", e);
+
+        if (failover(atemptsBeforeFailover, numAttemptsBeforeFailover)) {
+          atemptsBeforeFailover = 0;
+        }
+      }
+
+      // Reset ctx so that new DirContext can be created with new connection
+      this.ctx = null;
+    }
+
+    return Collections.emptySet();
   }
 
   @Override
@@ -754,8 +771,18 @@ public class LdapGroupsMapping
     }
     SEARCH_CONTROLS.setReturningAttributes(returningAttributes);
 
-    ldapCxtFactoryClass = conf.getClass(LDAP_CTX_FACTORY_CLASS_KEY,
-        LDAP_CTX_FACTORY_CLASS_DEFAULT, InitialContextFactory.class);
+    // LDAP_CTX_FACTORY_CLASS_DEFAULT is not open to unnamed modules
+    // in Java 11+, so the default value is set to null to avoid
+    // creating the instance for now.
+    Class<? extends InitialContextFactory> ldapCtxFactoryClass =
+        conf.getClass(LDAP_CTX_FACTORY_CLASS_KEY, null,
+        InitialContextFactory.class);
+    if (ldapCtxFactoryClass != null) {
+      ldapCtxFactoryClassName = ldapCtxFactoryClass.getName();
+    } else {
+      // The default value is set afterwards.
+      ldapCtxFactoryClassName = LDAP_CTX_FACTORY_CLASS_DEFAULT;
+    }
 
     this.numAttempts = conf.getInt(LDAP_NUM_ATTEMPTS_KEY,
         LDAP_NUM_ATTEMPTS_DEFAULT);
@@ -836,7 +863,7 @@ public class LdapGroupsMapping
 
     StringBuilder password = new StringBuilder();
     try (Reader reader = new InputStreamReader(
-        new FileInputStream(pwFile), StandardCharsets.UTF_8)) {
+        Files.newInputStream(Paths.get(pwFile)), StandardCharsets.UTF_8)) {
       int c = reader.read();
       while (c > -1) {
         password.append((char)c);
@@ -918,4 +945,130 @@ public class LdapGroupsMapping
       return this.username;
     }
   }
+
+  /**
+   * An private internal socket factory used to create SSL sockets with custom
+   * configuration. There is no way to pass a specific instance of a factory to
+   * the Java naming services, and the instantiated socket factory is not
+   * passed any contextual information, so all information must be encapsulated
+   * directly in the class. Static fields are used here to achieve this. This is
+   * safe since the only usage of {@link LdapGroupsMapping} is within
+   * {@link Groups}, which is a singleton (see the GROUPS field).
+   * <p>
+   * This has nearly the same behavior as an {@link SSLSocketFactory}. The only
+   * additional logic is to configure the key store and trust store.
+   * <p>
+   * This is public only to be accessible by the Java naming services.
+   */
+  @InterfaceAudience.Private
+  public static class LdapSslSocketFactory extends SocketFactory {
+
+    /** Cached value lazy-loaded by {@link #getDefault()}. */
+    private static LdapSslSocketFactory defaultSslFactory;
+
+    private static String keyStoreLocation;
+    private static String keyStorePassword;
+    private static String trustStoreLocation;
+    private static String trustStorePassword;
+
+    private final SSLSocketFactory socketFactory;
+
+    LdapSslSocketFactory(SSLSocketFactory wrappedSocketFactory) {
+      this.socketFactory = wrappedSocketFactory;
+    }
+
+    public static synchronized SocketFactory getDefault() {
+      if (defaultSslFactory == null) {
+        try {
+          SSLContext context = SSLContext.getInstance("TLS");
+          context.init(createKeyManagers(), createTrustManagers(), null);
+          defaultSslFactory =
+              new LdapSslSocketFactory(context.getSocketFactory());
+          LOG.info("Successfully instantiated LdapSslSocketFactory with "
+                  + "keyStoreLocation = {} and trustStoreLocation = {}",
+              keyStoreLocation, trustStoreLocation);
+        } catch (IOException | GeneralSecurityException e) {
+          throw new RuntimeException("Unable to create SSLSocketFactory", e);
+        }
+      }
+      return defaultSslFactory;
+    }
+
+    static synchronized void setConfigurations(String newKeyStoreLocation,
+        String newKeyStorePassword, String newTrustStoreLocation,
+        String newTrustStorePassword) {
+      LdapSslSocketFactory.keyStoreLocation = newKeyStoreLocation;
+      LdapSslSocketFactory.keyStorePassword = newKeyStorePassword;
+      LdapSslSocketFactory.trustStoreLocation = newTrustStoreLocation;
+      LdapSslSocketFactory.trustStorePassword = newTrustStorePassword;
+    }
+
+    private static KeyManager[] createKeyManagers()
+        throws IOException, GeneralSecurityException {
+      if (keyStoreLocation.isEmpty()) {
+        return null;
+      }
+      KeyManagerFactory keyMgrFactory = KeyManagerFactory
+          .getInstance(KeyManagerFactory.getDefaultAlgorithm());
+      keyMgrFactory.init(createKeyStore(keyStoreLocation, keyStorePassword),
+          getPasswordCharArray(keyStorePassword));
+      return keyMgrFactory.getKeyManagers();
+    }
+
+    private static TrustManager[] createTrustManagers()
+        throws IOException, GeneralSecurityException {
+      if (trustStoreLocation.isEmpty()) {
+        return null;
+      }
+      TrustManagerFactory trustMgrFactory = TrustManagerFactory
+          .getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      trustMgrFactory.init(
+          createKeyStore(trustStoreLocation, trustStorePassword));
+      return trustMgrFactory.getTrustManagers();
+    }
+
+    private static KeyStore createKeyStore(String location, String password)
+        throws IOException, GeneralSecurityException {
+      KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+      try (InputStream keyStoreInput = new FileInputStream(location)) {
+        keyStore.load(keyStoreInput, getPasswordCharArray(password));
+      }
+      return keyStore;
+    }
+
+    private static char[] getPasswordCharArray(String password) {
+      if (password == null || password.isEmpty()) {
+        return null;
+      }
+      return password.toCharArray();
+    }
+
+    @Override
+    public Socket createSocket() throws IOException {
+      return socketFactory.createSocket();
+    }
+
+    @Override
+    public Socket createSocket(String host, int port) throws IOException {
+      return socketFactory.createSocket(host, port);
+    }
+
+    @Override
+    public Socket createSocket(String host, int port, InetAddress localHost,
+        int localPort) throws IOException {
+      return socketFactory.createSocket(host, port, localHost, localPort);
+    }
+
+    @Override
+    public Socket createSocket(InetAddress host, int port) throws IOException {
+      return socketFactory.createSocket(host, port);
+    }
+
+    @Override
+    public Socket createSocket(InetAddress address, int port,
+        InetAddress localAddress, int localPort) throws IOException {
+      return socketFactory.createSocket(address, port, localAddress, localPort);
+    }
+  }
+
 }

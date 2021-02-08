@@ -66,6 +66,17 @@ public interface StreamCapabilities {
   String READBYTEBUFFER = "in:readbytebuffer";
 
   /**
+   * Stream read(long, ByteBuffer) capability implemented by
+   * {@link ByteBufferPositionedReadable#read(long, java.nio.ByteBuffer)}.
+   */
+  String PREADBYTEBUFFER = "in:preadbytebuffer";
+
+  /**
+   * IOStatisticsSource API.
+   */
+  String IOSTATISTICS = "iostatistics";
+
+  /**
    * Capabilities that a stream can support and be queried for.
    */
   @Deprecated

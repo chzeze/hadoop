@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -332,11 +332,9 @@ public class ProportionalCapacityPreemptionPolicy
         toPreemptPerSelector.values()) {
       toPreemptCount += containers.size();
     }
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(
-          "Starting to preempt containers for selectedCandidates and size:"
-              + toPreemptCount);
-    }
+    LOG.debug(
+        "Starting to preempt containers for selectedCandidates and size:{}",
+        toPreemptCount);
 
     // preempt (or kill) the selected containers
     // We need toPreemptPerSelector here to match list of containers to
@@ -569,7 +567,7 @@ public class ProportionalCapacityPreemptionPolicy
     // Acquire a read lock from Parent/LeafQueue.
     readLock.lock();
     try {
-      String queueName = curQueue.getQueueName();
+      String queuePath = curQueue.getQueuePath();
       QueueCapacities qc = curQueue.getQueueCapacities();
       float absCap = qc.getAbsoluteCapacity(partitionToLookAt);
       float absMaxCap = qc.getAbsoluteMaximumCapacity(partitionToLookAt);
@@ -588,8 +586,8 @@ public class ProportionalCapacityPreemptionPolicy
 
       Resource reserved = Resources.clone(
           curQueue.getQueueResourceUsage().getReserved(partitionToLookAt));
-      if (null != preemptableQueues.get(queueName)) {
-        killable = Resources.clone(preemptableQueues.get(queueName)
+      if (null != preemptableQueues.get(queuePath)) {
+        killable = Resources.clone(preemptableQueues.get(queuePath)
             .getKillableResource(partitionToLookAt));
       }
 
@@ -605,7 +603,7 @@ public class ProportionalCapacityPreemptionPolicy
         // just ignore the error, this will be corrected when doing next check.
       }
 
-      ret = new TempQueuePerPartition(queueName, current, preemptionDisabled,
+      ret = new TempQueuePerPartition(queuePath, current, preemptionDisabled,
           partitionToLookAt, killable, absCap, absMaxCap, partitionResource,
           reserved, curQueue, effMinRes, effMaxRes);
 

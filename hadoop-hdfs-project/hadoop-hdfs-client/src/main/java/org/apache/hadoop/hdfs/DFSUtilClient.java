@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import com.google.common.primitives.SignedBytes;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.SignedBytes;
 import java.net.URISyntaxException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
@@ -35,6 +35,7 @@ import org.apache.hadoop.hdfs.net.Peer;
 import org.apache.hadoop.hdfs.protocol.ClientDatanodeProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.EncryptionZone;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
@@ -994,4 +995,61 @@ public class DFSUtilClient {
     return new Path(sb.toString());
   }
 
+  /**
+   * Returns current user home directory under a home directory prefix.
+   * The home directory prefix can be defined by
+   * {@link HdfsClientConfigKeys#DFS_USER_HOME_DIR_PREFIX_KEY}.
+   * User info is obtained from given {@link UserGroupInformation}.
+   * @param conf configuration
+   * @param ugi {@link UserGroupInformation} of current user.
+   * @return the home directory of current user.
+   */
+  public static String getHomeDirectory(Configuration conf,
+      UserGroupInformation ugi) {
+    String userHomePrefix = HdfsClientConfigKeys
+        .DFS_USER_HOME_DIR_PREFIX_DEFAULT;
+    if (conf != null) {
+      userHomePrefix = conf.get(
+          HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY,
+          HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT);
+    }
+    return userHomePrefix + Path.SEPARATOR + ugi.getShortUserName();
+  }
+
+  /**
+   * Returns trash root in non-encryption zone.
+   * @param conf configuration.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getTrashRoot(Configuration conf,
+      UserGroupInformation ugi) {
+    return getHomeDirectory(conf, ugi)
+        + Path.SEPARATOR + FileSystem.TRASH_PREFIX;
+  }
+
+  /**
+   * Returns trash root in encryption zone.
+   * @param ez encryption zone.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getEZTrashRoot(EncryptionZone ez,
+      UserGroupInformation ugi) {
+    String ezpath = ez.getPath();
+    return (ezpath.equals("/") ? ezpath : ezpath + Path.SEPARATOR)
+        + FileSystem.TRASH_PREFIX + Path.SEPARATOR + ugi.getShortUserName();
+  }
+
+  /**
+   * Returns trash root in a snapshottable directory.
+   * @param ssRoot String of path to a snapshottable directory root.
+   * @param ugi user of trash owner.
+   * @return unqualified path of trash root.
+   */
+  public static String getSnapshotTrashRoot(String ssRoot,
+      UserGroupInformation ugi) {
+    return (ssRoot.equals("/") ? ssRoot : ssRoot + Path.SEPARATOR)
+        + FileSystem.TRASH_PREFIX + Path.SEPARATOR + ugi.getShortUserName();
+  }
 }

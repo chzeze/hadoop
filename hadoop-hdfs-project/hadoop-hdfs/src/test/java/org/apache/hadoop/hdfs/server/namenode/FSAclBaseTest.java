@@ -57,8 +57,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Tests NameNode interaction for all ACL modification APIs.  This test suite
@@ -1150,7 +1150,7 @@ public abstract class FSAclBaseTest {
     AclStatus s = fs.getAclStatus(dirPath);
     AclEntry[] returned = s.getEntries().toArray(new AclEntry[0]);
     assertArrayEquals(expected, returned);
-    assertPermission(dirPath, (short)010750);
+    assertPermission(dirPath, (short)010770);
     assertAclFeature(dirPath, true);
     s = fs.getAclStatus(subdirPath);
     returned = s.getEntries().toArray(new AclEntry[0]);

@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.metrics;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -290,7 +291,7 @@ public class TestSystemMetricsPublisher {
         } else if (event.getEventType().equals(
               ApplicationMetricsConstants.STATE_UPDATED_EVENT_TYPE)) {
           hasStateUpdateEvent = true;
-          Assert.assertEquals(event.getTimestamp(), stateUpdateTimeStamp);
+          assertThat(event.getTimestamp()).isEqualTo(stateUpdateTimeStamp);
           Assert.assertEquals(YarnApplicationState.RUNNING.toString(), event
               .getEventInfo().get(
                    ApplicationMetricsConstants.STATE_EVENT_INFO));
@@ -525,7 +526,8 @@ public class TestSystemMetricsPublisher {
         .put(ResourceInformation.MEMORY_MB.getName(), (long) Integer.MAX_VALUE);
     preemptedMap.put(ResourceInformation.VCORES.getName(), Long.MAX_VALUE);
     when(app.getRMAppMetrics())
-        .thenReturn(new RMAppMetrics(null, 0, 0, resourceMap, preemptedMap));
+        .thenReturn(new RMAppMetrics(null, 0, 0, resourceMap, preemptedMap,
+            0));
     Set<String> appTags = new HashSet<String>();
     appTags.add("test");
     appTags.add("tags");

@@ -25,7 +25,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
@@ -48,8 +48,8 @@ import org.apache.hadoop.yarn.client.api.impl.AMRMClientImpl;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -857,10 +857,7 @@ public abstract class AMRMClient<T extends AMRMClient.ContainerRequest> extends
 
     int loggingCounter = logInterval;
     do {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Check the condition for main loop.");
-      }
-
+      LOG.debug("Check the condition for main loop.");
       boolean result = check.get();
       if (result) {
         LOG.info("Exits the main loop.");
